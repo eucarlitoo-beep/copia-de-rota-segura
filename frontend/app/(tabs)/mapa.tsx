@@ -44,9 +44,10 @@ export default function Mapa() {
   const [destination, setDestination] = useState("");
   const [navigationBusy, setNavigationBusy] = useState(false);
   const [navigationMode, setNavigationMode] = useState(false);
+  const [travelMode, setTravelMode] = useState<"driving" | "walking">("driving");
   const [currentPosition, setCurrentPosition] = useState<MapPosition | null>(null);
   const [matchedGeometry, setMatchedGeometry] = useState<[number, number][]>([]);
-  const [routeInfo, setRouteInfo] = useState<{ geometry: [number, number][]; distance: number; duration: number; steps: { name: string; type: string; modifier: string }[] } | null>(null);
+  const [routeInfo, setRouteInfo] = useState<{ geometry: [number, number][]; distance: number; duration: number; steps: { name: string; type: string; modifier: string; distance: number }[] } | null>(null);
   const gpsWatch = useRef<Location.LocationSubscription | null>(null);
   const gpsTrace = useRef<{ lat: number; lng: number; timestamp: number; accuracy: number }[]>([]);
   const lastMatchAt = useRef(0);
@@ -80,8 +81,8 @@ export default function Mapa() {
       const placeResult = await api<{ lat: number; lng: number; city: string; state: string }>("/location/geocode", {
         method: "POST", body: { query: destination.trim() },
       });
-      const route = await api<{ geometry: [number, number][]; distance: number; duration: number; steps: { name: string; type: string; modifier: string }[] }>("/navigation/route", {
-        method: "POST", body: { origin: { lat: current.coords.lat, lng: current.coords.lng, timestamp: Math.floor(Date.now() / 1000), accuracy: current.coords.accuracy ?? 25 }, destination_lat: placeResult.lat, destination_lng: placeResult.lng },
+      const route = await api<{ geometry: [number, number][]; distance: number; duration: number; steps: { name: string; type: string; modifier: string; distance: number }[] }>("/navigation/route", {
+        method: "POST", body: { origin: { lat: current.coords.lat, lng: current.coords.lng, timestamp: Math.floor(Date.now() / 1000), accuracy: current.coords.accuracy ?? 25 }, destination_lat: placeResult.lat, destination_lng: placeResult.lng, mode: travelMode },
       });
       setRouteInfo(route);
       setMatchedGeometry([]);
@@ -103,7 +104,7 @@ export default function Mapa() {
           setCurrentPosition({ latitude: point.lat, longitude: point.lng, heading: position.coords.heading ?? null });
           if (gpsTrace.current.length >= 3 && point.timestamp - lastMatchAt.current >= 20) {
             lastMatchAt.current = point.timestamp;
-            api<{ geometry: [number, number][]; matched: boolean }>("/navigation/match", { method: "POST", body: { points: gpsTrace.current.slice(-20) } })
+            api<{ geometry: [number, number][]; matched: boolean }>("/navigation/match", { method: "POST", body: { points: gpsTrace.current.slice(-20), mode: travelMode } })
               .then((match) => {
                 if (match.matched && match.geometry.length > 1) setMatchedGeometry(match.geometry);
               })
@@ -194,17 +195,17 @@ export default function Mapa() {
   return (
     <View style={s.root}>
       {region ? (
-        <RiskMap key={`${region.latitude.toFixed(5)}:${region.longitude.toFixed(5)}`} alerts={visibleAlerts} region={region} onRegionChange={(r) => { center.current = r; setMapCenter(r); }} showUser={perm.granted} onSelect={setSelected} cameraFollow={navigationMode} currentPosition={currentPosition} routeCoordinates={routeInfo?.geometry.map(([lng, lat]) => ({ latitude: lat, longitude: lng })) ?? []} matchedCoordinates={matchedGeometry.map(([lng, lat]) => ({ latitude: lat, longitude: lng }))} />
+        <RiskMap key={`${region.latitude.toFixed(5)}:${region.longitude.toFixed(5)}`} alerts={visibleAlerts} region={region} onRegionChange={(r) => { center.current = r; setMapCenter(r); }} showUser={perm.granted && !navigationMode} onSelect={setSelected} cameraFollow={navigationMode} currentPosition={currentPosition} travelMode={travelMode} routeCoordinates={routeInfo?.geometry.map(([lng, lat]) => ({ latitude: lat, longitude: lng })) ?? []} matchedCoordinates={matchedGeometry.map(([lng, lat]) => ({ latitude: lat, longitude: lng }))} />
       ) : (
         <View style={s.loading}><ActivityIndicator color={colors.brand} size="large" /><Txt>Carregando mapa...</Txt></View>
       )}
       <View style={[s.top, { top: insets.top + S.sm }]} pointerEvents="box-none">
-        <View style={s.titleCard}>
+        {!navigationMode ? <View style={s.titleCard}>
           <Icon name="map" size={20} color={colors.brandPrimary} />
           <Txt style={s.title}>Mapa de riscos</Txt>
           <Txt testID="map-alert-count" style={s.count}>{visibleAlerts.length} alerta(s)</Txt>
-        </View>
-        <View style={s.filterCard}>
+        </View> : null}
+        {!navigationMode ? <View style={s.filterCard}>
           <View style={s.filterHeader}>
             <Txt style={s.filterTitle}>Período</Txt>
             <Pressable testID="map-refresh-button" accessibilityRole="button" accessibilityLabel="Atualizar alertas" onPress={refreshAlerts} disabled={alertsBusy} style={s.refresh}>
@@ -221,12 +222,12 @@ export default function Mapa() {
             {CATEGORIES.map((item) => <Pressable key={item.key} testID={`map-category-${item.key}`} accessibilityRole="button" accessibilityState={{ selected: category === item.key }} onPress={() => setCategory(item.key)} style={[s.chip, category === item.key && s.chipActive]}><Txt style={[s.chipText, category === item.key && s.chipTextActive]}>{item.label}</Txt></Pressable>)}
           </ScrollView>
           {alertsError ? <View style={s.alertError}><Txt style={s.alertErrorText}>Não foi possível atualizar. Exibindo os dados disponíveis.</Txt><Pressable onPress={refreshAlerts}><Txt style={s.retryText}>Tentar novamente</Txt></Pressable></View> : alertsUpdatedAt ? <Txt style={s.updatedAt}>Atualizado {timeAgo(alertsUpdatedAt.toISOString())}</Txt> : null}
-        </View>
+        </View> : null}
         {navigationMode && routeInfo ? (
-          <View testID="map-navigation-active" style={s.routeCard}>
-            <View style={s.routeStats}><Icon name="navigate" size={20} color={colors.success} /><Txt style={s.routeDistance}>{(routeInfo.distance / 1000).toFixed(1)} km</Txt><Txt style={s.routeDuration}>{Math.max(1, Math.round(routeInfo.duration / 60))} min</Txt></View>
-            <Txt style={s.routeNext} numberOfLines={1}>{routeInfo.steps[0]?.name ? `Siga pela ${routeInfo.steps[0].name}` : "GPS seguindo sua posição"}</Txt>
-            <Pressable testID="map-navigation-stop" onPress={stopNavigation}><Txt style={s.routeStop}>Encerrar navegação</Txt></Pressable>
+          <View testID="map-navigation-active" style={s.turnHud}>
+            <Icon name={routeInfo.steps[0]?.modifier?.includes("left") ? "arrow-undo" : routeInfo.steps[0]?.modifier?.includes("right") ? "arrow-redo" : "arrow-up"} size={34} color="#FFFFFF" />
+            <View style={{ flex: 1 }}><Txt style={s.hudDistance}>{Math.max(20, Math.round(routeInfo.steps[0]?.distance ?? routeInfo.distance))} m</Txt><Txt style={s.hudStreet} numberOfLines={1}>{routeInfo.steps[0]?.name || (travelMode === "driving" ? "Siga em frente" : "Continue a pé")}</Txt></View>
+            <Pressable testID="map-navigation-stop" onPress={stopNavigation} style={s.hudClose}><Icon name="close" size={20} color="#FFFFFF" /></Pressable>
           </View>
         ) : (
           <Pressable testID="map-navigation-open" accessibilityRole="button" onPress={() => setNavigationSheet(true)} style={s.navOpen}>
@@ -250,7 +251,11 @@ export default function Mapa() {
           />
         ) : null}
       </View>
-      <View style={[s.fabs, { bottom: bottomChrome + S.lg }]}>
+      {navigationMode && routeInfo ? <View testID="map-navigation-summary" style={[s.routeSummary, { bottom: bottomChrome + S.lg }]}>
+        <View style={s.summaryTop}><Icon name={travelMode === "driving" ? "car-sport" : "walk"} size={22} color={colors.brand} /><Txt style={s.summaryLabel}>{travelMode === "driving" ? "De carro" : "A pé"}</Txt><View style={{ flex: 1 }} /><Txt style={s.summaryDistance}>{(routeInfo.distance / 1000).toFixed(1)} km</Txt></View>
+        <View style={s.summaryBottom}><Txt style={s.summaryEta}>{Math.max(1, Math.round(routeInfo.duration / 60))} min</Txt><Txt style={s.summaryText}>estimados · rota destacada</Txt><Pressable testID="map-navigation-stop-bottom" onPress={stopNavigation}><Txt style={s.routeStop}>Encerrar</Txt></Pressable></View>
+      </View> : null}
+      {!navigationMode ? <View style={[s.fabs, { bottom: bottomChrome + S.lg }]}>
         {perm.granted ? (
           <Pressable testID="map-locate-button" accessibilityLabel="Minha localização" onPress={locate} style={s.fabSmall}>
             <Icon name="locate" size={24} color={colors.brand} />
@@ -260,7 +265,7 @@ export default function Mapa() {
           <Icon name="add-circle" size={26} color={colors.onBrandPrimary} />
           <Txt style={s.fabText}>Relatar risco aqui</Txt>
         </Pressable>
-      </View>
+      </View> : null}
       <Sheet visible={!!selected} onClose={() => setSelected(null)} testID="map-alert-sheet">
         {selected ? (
           <View>
@@ -276,8 +281,11 @@ export default function Mapa() {
       </Sheet>
       <Sheet visible={navigationSheet} onClose={() => setNavigationSheet(false)} testID="map-navigation-sheet">
         <Txt variant="h2">Traçar rota GPS</Txt>
-        <Txt style={{ marginVertical: S.md }}>Digite o destino. Para calcular e ajustar a rota à via, o GPS de origem, o destino e os pontos do trajeto com horários serão enviados ao backend do ROTA SEGURA e ao serviço público OSRM (router.project-osrm.org). O compartilhamento não começa automaticamente.</Txt>
+        <Txt style={{ marginVertical: S.md }}>Digite o destino. Para calcular e ajustar a rota à via, o GPS de origem, o destino e os pontos do trajeto com horários serão enviados ao backend e ao serviço de rotas configurado. A pé, é necessário configurar um serviço compatível no servidor. O compartilhamento não começa automaticamente.</Txt>
         <TextInput testID="map-destination-input" value={destination} onChangeText={setDestination} placeholder="Endereço ou cidade de destino" placeholderTextColor={colors.muted} style={s.destinationInput} returnKeyType="done" />
+        <View style={s.modeRow}>
+          {([{ key: "driving", label: "De carro", icon: "car-sport" }, { key: "walking", label: "A pé", icon: "walk" }] as const).map((mode) => <Pressable key={mode.key} testID={`map-mode-${mode.key}`} accessibilityRole="button" accessibilityState={{ selected: travelMode === mode.key }} onPress={() => setTravelMode(mode.key)} style={[s.modeButton, travelMode === mode.key && s.modeButtonSelected]}><Icon name={mode.icon as any} size={18} color={travelMode === mode.key ? colors.onBrand : colors.brand} /><Txt style={[s.modeText, travelMode === mode.key && { color: colors.onBrand }]}>{mode.label}</Txt></Pressable>)}
+        </View>
         <Btn testID="map-navigation-start" label="Concordar e calcular rota" icon="navigate" onPress={startNavigation} loading={navigationBusy} disabled={destination.trim().length < 3} />
         <Btn testID="map-navigation-cancel" label="Cancelar" variant="ghost" onPress={() => setNavigationSheet(false)} style={{ marginTop: S.sm }} />
       </Sheet>
@@ -320,6 +328,21 @@ const useStyles = makeStyles((c) => ({
   retryText: { fontFamily: F.bold, fontSize: 11, color: c.brand, textDecorationLine: "underline" },
   navOpen: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: S.sm, backgroundColor: c.success, minHeight: 46, borderRadius: R.md, paddingHorizontal: S.md },
   navOpenText: { flex: 1, textAlign: "center", fontFamily: F.bold, fontSize: 13, color: c.onSuccess },
+  turnHud: { flexDirection: "row", alignItems: "center", gap: S.lg, backgroundColor: "#101820", borderRadius: R.md, minHeight: 88, paddingHorizontal: S.lg, paddingVertical: S.md, shadowColor: "#000000", shadowOpacity: 0.28, shadowRadius: 12, elevation: 8 },
+  hudDistance: { fontFamily: F.black, fontSize: 25, color: "#FFFFFF" },
+  hudStreet: { fontFamily: F.bold, fontSize: 17, color: "#55D6F5" },
+  hudClose: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(255,255,255,0.12)" },
+  routeSummary: { position: "absolute", left: S.lg, right: S.lg, minHeight: 92, borderRadius: R.md, padding: S.lg, backgroundColor: c.surface, borderWidth: 1, borderColor: c.border, shadowColor: "#000000", shadowOpacity: 0.2, shadowRadius: 12, elevation: 8, gap: S.sm },
+  summaryTop: { flexDirection: "row", alignItems: "center", gap: S.sm },
+  summaryLabel: { fontFamily: F.bold, fontSize: 14, color: c.onSurface },
+  summaryDistance: { fontFamily: F.bold, fontSize: 14, color: c.brand },
+  summaryBottom: { flexDirection: "row", alignItems: "center", gap: S.sm },
+  summaryEta: { fontFamily: F.black, fontSize: 22, color: c.onSurface },
+  summaryText: { flex: 1, fontFamily: F.medium, fontSize: 12, color: c.muted },
+  modeRow: { flexDirection: "row", gap: S.sm, marginBottom: S.md },
+  modeButton: { flex: 1, minHeight: 48, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: S.sm, borderRadius: R.md, borderWidth: 1.5, borderColor: c.brand, backgroundColor: c.surface },
+  modeButtonSelected: { backgroundColor: c.brand },
+  modeText: { fontFamily: F.bold, fontSize: 14, color: c.brand },
   routeCard: { backgroundColor: c.surface, borderRadius: R.md, borderWidth: 1.5, borderColor: c.success, padding: S.md, gap: S.xs, shadowColor: c.brand, shadowOpacity: 0.14, shadowRadius: 8, elevation: 4 },
   routeStats: { flexDirection: "row", alignItems: "center", gap: S.sm },
   routeDistance: { fontFamily: F.black, fontSize: 18, color: c.onSurface, flex: 1 },

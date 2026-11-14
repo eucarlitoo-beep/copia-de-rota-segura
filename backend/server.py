@@ -487,21 +487,27 @@ class NavigationIn(BaseModel):
     origin: GPSPoint
     destination_lat: float = Field(ge=-90, le=90)
     destination_lng: float = Field(ge=-180, le=180)
+    mode: Literal["driving", "walking"] = "driving"
 
 
 class MatchIn(BaseModel):
     points: List[GPSPoint] = Field(min_length=2, max_length=50)
+    mode: Literal["driving", "walking"] = "driving"
 
 
 OSRM_BASE_URL = os.environ.get("OSRM_BASE_URL", "https://router.project-osrm.org").rstrip("/")
+OSRM_FOOT_BASE_URL = os.environ.get("OSRM_FOOT_BASE_URL", "").rstrip("/")
 
 
 @api.post("/navigation/route")
 async def navigation_route(body: NavigationIn, _: dict = Depends(current_user)):
+    routing_url = OSRM_BASE_URL if body.mode == "driving" else OSRM_FOOT_BASE_URL
+    if not routing_url:
+        raise HTTPException(503, "Rotas a pé ainda não estão configuradas neste servidor.")
     coordinates = f"{body.origin.lng},{body.origin.lat};{body.destination_lng},{body.destination_lat}"
     try:
         async with httpx.AsyncClient(timeout=12) as session:
-            response = await session.get(f"{OSRM_BASE_URL}/route/v1/driving/{coordinates}", params={
+            response = await session.get(f"{routing_url}/route/v1/{body.mode}/{coordinates}", params={
                 "overview": "full", "geometries": "geojson", "steps": "true", "alternatives": "false",
             })
             response.raise_for_status()
@@ -521,6 +527,9 @@ async def navigation_route(body: NavigationIn, _: dict = Depends(current_user)):
 
 @api.post("/navigation/match")
 async def navigation_match(body: MatchIn, _: dict = Depends(current_user)):
+    routing_url = OSRM_BASE_URL if body.mode == "driving" else OSRM_FOOT_BASE_URL
+    if not routing_url:
+        raise HTTPException(503, "Ajuste de trajeto a pé ainda não está configurado neste servidor.")
     points = body.points
     if any(points[i].timestamp >= points[i + 1].timestamp for i in range(len(points) - 1)):
         raise HTTPException(422, "Os horários dos pontos do GPS precisam estar em ordem crescente.")
@@ -532,7 +541,7 @@ async def navigation_match(body: MatchIn, _: dict = Depends(current_user)):
     }
     try:
         async with httpx.AsyncClient(timeout=12) as session:
-            response = await session.get(f"{OSRM_BASE_URL}/match/v1/driving/{coordinates}", params=params)
+            response = await session.get(f"{routing_url}/match/v1/{body.mode}/{coordinates}", params=params)
             response.raise_for_status()
             payload = response.json()
     except (httpx.HTTPError, ValueError) as exc:
@@ -611,6 +620,7 @@ class AlertIn(BaseModel):
     description: str = Field(min_length=10, max_length=280)
     lat: float
     lng: float
+    neighborhood: Optional[str] = Field(default=None, max_length=80)
 
 
 def validate_text(t: str):
@@ -623,7 +633,7 @@ def validate_text(t: str):
 
 
 def public_alert(a: dict, uid: str) -> dict:
-    return {k: a.get(k) for k in ("id", "category", "description", "lat", "lng", "status", "created_at", "confirmations")} | {
+    return {k: a.get(k) for k in ("id", "category", "description", "lat", "lng", "status", "created_at", "confirmations", "neighborhood")} | {
         "confirmed_by_me": uid in a.get("confirmed_by", []), "flagged_by_me": uid in a.get("flagged_by", []),
         "is_mine": a.get("reporter_id") == uid}
 
@@ -635,6 +645,7 @@ async def create_alert(body: AlertIn, u: dict = Depends(current_user)):
     if await db.alerts.count_documents({"reporter_id": u["id"], "created_at": {"$gte": since}}) >= 5:
         raise HTTPException(429, "Limite de 5 relatos por dia atingido.")
     a = {"id": new_id(), "reporter_id": u["id"], "category": body.category, "description": body.description.strip(),
+         "neighborhood": re.sub(r"\s+", " ", body.neighborhood or "").strip()[:80] or None,
          # Privacidade: coordenadas arredondadas (~100 m)
          "lat": round(body.lat, 3), "lng": round(body.lng, 3), "status": "pendente", "confirmations": 0,
          "confirmed_by": [], "flagged_by": [], "flags": 0, "created_at": iso(now())}
@@ -649,6 +660,26 @@ async def list_alerts(category: Optional[str] = None, hours: int = 72, u: dict =
         q["category"] = category
     items = await db.alerts.find(q, {"_id": 0}).sort("created_at", -1).to_list(300)
     return [public_alert(a, u["id"]) for a in items]
+
+
+@api.get("/alerts/stats/neighborhoods")
+async def neighborhood_alert_stats(hours: int = 720, _: dict = Depends(current_user)):
+    """Aggregate approved community reports; no official crime statistics are implied."""
+    window = min(max(hours, 1), 720)
+    since = iso(now() - timedelta(hours=window))
+    rows = await db.alerts.find({"status": "aprovado", "created_at": {"$gte": since},
+                                "neighborhood": {"$type": "string", "$ne": ""}},
+                                {"_id": 0, "category": 1, "neighborhood": 1}).to_list(5000)
+    grouped: dict[str, dict] = {}
+    for row in rows:
+        name = row["neighborhood"].strip()
+        key = name.casefold()
+        item = grouped.setdefault(key, {"neighborhood": name, "total": 0, "categories": {}})
+        item["total"] += 1
+        category = row.get("category", "outro")
+        item["categories"][category] = item["categories"].get(category, 0) + 1
+    return {"source": "relatos aprovados da comunidade", "hours": window,
+            "neighborhoods": sorted(grouped.values(), key=lambda item: (-item["total"], item["neighborhood"].casefold()))[:20]}
 
 
 @api.post("/alerts/{aid}/confirm")
@@ -712,6 +743,7 @@ async def remove_push_token(body: PushTokenIn, u: dict = Depends(current_user)):
 
 class CommunityMessageIn(BaseModel):
     message: str = Field(min_length=2, max_length=500)
+    topic: Literal["apoio", "trajeto", "risco", "geral"] = "geral"
 
 
 class CommunityReportIn(BaseModel):
@@ -724,7 +756,7 @@ async def list_community_messages(before: Optional[str] = None, u: dict = Depend
     if before:
         query["created_at"] = {"$lt": before}
     rows = await db.community_messages.find(query, {"_id": 0}).sort("created_at", -1).limit(100).to_list(100)
-    return [{"id": row["id"], "author": row["author"], "message": row["message"], "created_at": row["created_at"],
+    return [{"id": row["id"], "author": row["author"], "message": row["message"], "topic": row.get("topic", "geral"), "created_at": row["created_at"],
              "is_mine": row["user_id"] == u["id"]} for row in reversed(rows)]
 
 
@@ -735,10 +767,10 @@ async def post_community_message(body: CommunityMessageIn, u: dict = Depends(cur
     since = iso(now() - timedelta(minutes=1))
     if await db.community_messages.count_documents({"user_id": u["id"], "created_at": {"$gte": since}}) >= 5:
         raise HTTPException(429, "Você enviou muitas mensagens. Aguarde um minuto e tente novamente.")
-    row = {"id": new_id(), "user_id": u["id"], "author": u["name"].split(" ")[0], "message": message,
+    row = {"id": new_id(), "user_id": u["id"], "author": u["name"].split(" ")[0], "message": message, "topic": body.topic,
            "created_at": iso(now()), "hidden": False, "reports": 0, "reporter_ids": [], "report_reasons": []}
     await db.community_messages.insert_one(row)
-    return {"id": row["id"], "author": row["author"], "message": row["message"], "created_at": row["created_at"], "is_mine": True}
+    return {"id": row["id"], "author": row["author"], "message": row["message"], "topic": row["topic"], "created_at": row["created_at"], "is_mine": True}
 
 
 @api.post("/community/messages/{message_id}/report")
@@ -903,6 +935,31 @@ async def moderate(aid: str, body: ModerateIn, admin: dict = Depends(admin_user)
             await notify(a["reporter_id"], "Seu alerta foi publicado", "Obrigado por ajudar outros motoristas.", "success")
         else:
             await notify(a["reporter_id"], "Seu alerta não foi publicado", body.reason or "Não atende às regras da comunidade.", "warning")
+    return {"ok": True}
+
+
+@api.get("/admin/community/messages")
+async def admin_community_messages(_: dict = Depends(admin_user)):
+    rows = await db.community_messages.find({"moderation_decision": {"$exists": False},
+                                            "$or": [{"reports": {"$gt": 0}}, {"hidden": True}]},
+                                            {"_id": 0, "reporter_ids": 0}).sort("created_at", -1).to_list(300)
+    return rows
+
+
+class CommunityModerateIn(BaseModel):
+    decision: Literal["manter", "ocultar"]
+
+
+@api.post("/admin/community/messages/{message_id}/moderate")
+async def moderate_community_message(message_id: str, body: CommunityModerateIn, admin: dict = Depends(admin_user)):
+    row = await db.community_messages.find_one({"id": message_id})
+    if not row:
+        raise HTTPException(404, "Publicação não encontrada")
+    await db.community_messages.update_one({"id": message_id}, {"$set": {
+        "hidden": body.decision == "ocultar", "reports": 0, "reporter_ids": [], "report_reasons": [],
+        "moderated_by": admin["id"], "moderated_at": iso(now()),
+        "moderation_decision": body.decision,
+    }})
     return {"ok": True}
 
 
