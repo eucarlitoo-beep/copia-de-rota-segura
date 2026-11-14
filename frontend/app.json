@@ -1,0 +1,69 @@
+{
+  "expo": {
+    "name": "ROTA SEGURA",
+    "slug": "rota-segura",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "rotasegura",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.emergent.sosrota.lnw5zv",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Envie sua localização no SOS e veja riscos próximos"
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/adaptive-icon.png",
+        "backgroundColor": "#0B2545"
+      },
+      "package": "com.emergent.sosrota.lnw5zv",
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION"
+      ]
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single",
+      "favicon": "./assets/images/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/splash-image.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#0B2545"
+        }
+      ],
+      "expo-font",
+      "expo-image",
+      "expo-secure-store",
+      "expo-web-browser",
+      "expo-notifications",
+      "expo-status-bar",
+      "@react-native-vector-icons/ionicons",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Envie sua localização no SOS e veja riscos próximos"
+        }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Permita o uso do microfone apenas enquanto o monitoramento da palavra-chave estiver ativo.",
+          "speechRecognitionPermission": "Permita o reconhecimento de voz para identificar sua palavra-chave de SOS."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "summary": "ROTA SEGURA iteration 1: full backend regression (21 pytest cases, all pass) plus Expo web UI testing at 390x844 (register/login, SOS sheet -> actions, WhatsApp/SMS/real email, contacts CRUD + limit, report validation, alerts chips/list, admin approve/reject/users/plans, notifications, profile edit, plans in R$, privacy consent/export/delete, history, share link, map). Every core flow works end to end. One real SOS email was sent to delivered@resend.dev from the UI and one from pytest; both returned sent=1. Found only minor UI/UX issues and one Expo deprecation warning. Deprecated packages detected: none (no expo-av, expo-barcode-scanner or expo-background-fetch). Deprecated API detected: expo-router/unstable-native-tabs. SafeAreaView issues detected: none.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/alerts/{aid}/flag", "issue": "There is no status or author check. Users can flag their own alert or one that is still pending or rejected. A nonexistent alert id returns 409 'Denúncia já registrada' when it should return 404."},
+      {"endpoint": "GET /api/alerts", "issue": "The response has no is_mine/own flag, so the UI shows the 'Ainda ativo' and 'Denunciar' buttons on the user's own alert. Tapping confirm gives a 409 error toast."},
+      {"endpoint": "POST /api/sos/{iid}/email", "issue": "The hourly rate limit filters incidents by created_at, not by when the email was sent. Emails sent from older incidents within the hour are not counted. This is a minor bypass."},
+      {"endpoint": "POST /api/auth/login", "issue": "Lockout is keyed only by email. Anyone can lock out any account with 5 bad attempts, which is a DoS risk. Consider adding IP to the key."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Admin > Planos tab price row", "issue": "The 'Salvar' button overflows the card and the viewport: x=321, w=74, right edge 395px, but the card ends at 374px and the viewport is 390px. The web TextInput with flex:1 has an intrinsic width. Add minWidth: 0 to s.priceInput (app/admin.tsx:168) or give the input a flexBasis of 0.", "testID": "admin-plan-save-premium_mensal", "priority": "MEDIUM"},
+      {"component": "Share active card link", "issue": "The share-link Text uses numberOfLines={2} and puts padding on the Text itself, so on web a third line shows half-clipped. Move padding and background to a wrapping View (app/share.tsx:125,165).", "testID": "share-link", "priority": "LOW"},
+      {"component": "Alert card on own alert", "issue": "The confirm and flag buttons appear on the user's own alert. Confirm returns the error toast 'Você já confirmou ou é o autor deste alerta'. Hide or disable these buttons for the author.", "testID": "alert-confirm-{id}", "priority": "LOW"},
+      {"component": "Privacy export (web)", "issue": "Export uses RN Share.share (navigator.share), which desktop browsers often lack, so export may fail silently or show a toast on web. Consider a Blob download fallback on web.", "testID": "privacy-export-button", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Alertas", "issues": ["On the 'Todos' chip the empty state says 'nesta categoria', which is slightly misleading copy."]},
+      {"screen": "Contacts / toasts", "issues": ["The top toast ('Contato salvo.') covers the header and back button for a few seconds."]},
+      {"screen": "Mapa (web)", "issues": ["The header card 'Mapa de riscos' overlaps the OSM iframe zoom controls at the top right."]}
+    ],
+    "react_native_issues": [
+      {"component": "expo-router/unstable-native-tabs", "issue": "The console warns: '`expo-router/unstable-native-tabs` is deprecated. Use `expo-router/native-tabs` instead.' Reference: /app/frontend/app/(tabs)/_layout.tsx:1"}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_rota_segura_api.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [
+    "Change the import in app/(tabs)/_layout.tsx from 'expo-router/unstable-native-tabs' to 'expo-router/native-tabs'.",
+    "Fix the overflow of the admin plan 'Salvar' button: add minWidth: 0 to priceInput in app/admin.tsx.",
+    "Add an is_mine flag to public_alert (reporter_id == uid) and hide the confirm/flag buttons on the user's own alerts. In flag_alert, return 404 for a missing alert and only allow flagging alerts with status 'aprovado'.",
+    "Fix share-link clipping by moving padding off the Text that has numberOfLines (app/share.tsx).",
+    "Optional: add a web fallback for the privacy export (Blob download); count SOS email actions by action time when rate limiting; add IP to the login lockout key."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 740 lines, over the 700-line guideline. Consider splitting it into routers (auth, sos, alerts, admin, payments).",
+    "The SOS email rate limit query uses the incident created_at instead of the email action timestamp.",
+    "delete_account leaves the deleted user's id in other alerts' confirmed_by/flagged_by arrays, so some personal identifiers remain after deletion.",
+    "Incidents stay 'aberto' forever if the user closes the SOS sheet without tapping 'Estou seguro'. Consider auto-closing them.",
+    "Mongo _id is correctly excluded everywhere. Content filter, consent, lockout, admin 403 and the gratuito=0 rule all work as specified."
+  ],
+  "updated_files": ["/app/backend/tests/test_rota_segura_api.py (new)"],
+  "success_rate": {"backend": "100% (21/21)", "frontend": "~95% (all flows work; minor UI issues)"},
+  "seed_data_creation": "Created TEST_ users through register. All were deleted with DELETE /api/privacy/account, including the UI user test_fe_75c322@example.com, which was deleted through the privacy screen. TEST alerts that stayed behind after account deletion were moderated to 'rejeitado' so they are hidden. The premium_mensal price was changed by +1 cent during the test and then restored to 1490. No seed or user data was modified.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run the backend suite with: EXPO_BACKEND_URL=https://sos-rota--7cmdkhka.preview.emergentagent.com pytest /app/backend/tests/test_rota_segura_api.py -n 0. The -n 0 flag is required because xdist is enabled by default and module fixtures would otherwise split across workers. Bottom sheets animate in, so wait about 1.5-2s after opening one before clicking its buttons. The frontend env var is EXPO_PUBLIC_BACKEND_URL; there is no EXPO_BACKEND_URL in frontend/.env. Each run sends one real SOS email (limit 3 per hour per user, and each run uses a new user). Stripe checkout was skipped (known publishable-key issue).",
+  "rca_of_issue": "Admin plan button overflow: on react-native-web, a TextInput renders as <input> with a default intrinsic width (about 20ch). Inside a flex row, flex:1 without minWidth:0 can't shrink below that width, which pushes the sibling button out of the card."
+}

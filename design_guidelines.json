@@ -1,0 +1,146 @@
+{
+  "app_name": "ROTA SEGURA",
+  "personality": "1 iOS-Native Clean structure with 5 Brutalist Mobile oversized accessibility",
+  "personality_one_liner": "A high-visibility, panic-proof utility interface designed for instant response and absolute clarity during high-stress driving situations.",
+  "color": {
+    "surface": "#FFFFFF",
+    "onSurface": "#111827",
+    "surfaceSecondary": "#F4F5F7",
+    "onSurfaceSecondary": "#374151",
+    "surfaceTertiary": "#E9ECEF",
+    "onSurfaceTertiary": "#4B5563",
+    "surfaceInverse": "#1A1D20",
+    "onSurfaceInverse": "#FFFFFF",
+    "brand": "#0B2545",
+    "onBrand": "#FFFFFF",
+    "brandPrimary": "#FF6B35",
+    "onBrandPrimary": "#FFFFFF",
+    "brandSecondary": "#E65A20",
+    "onBrandSecondary": "#FFFFFF",
+    "brandTertiary": "#FFEAE0",
+    "onBrandTertiary": "#CC3B00",
+    "success": "#10B981",
+    "onSuccess": "#FFFFFF",
+    "warning": "#F59E0B",
+    "onWarning": "#FFFFFF",
+    "error": "#EF4444",
+    "onError": "#FFFFFF",
+    "border": "#E5E7EB",
+    "borderStrong": "#D1D5DB",
+    "divider": "#E5E7EB",
+    "muted": "#6B7280"
+  },
+  "typography": {
+    "displayFontFamily": "Plus Jakarta Sans",
+    "textFontFamily": "Plus Jakarta Sans",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24
+    }
+  },
+  "spacing": {
+    "rule": "Use extremely generous spacing. Buttons must be massive (min 56pt height, SOS button should be 150-200pt). Avoid dense layouts.",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 8,
+    "md": 16,
+    "lg": 24,
+    "pill": 999
+  },
+  "shadow_tier": "1",
+  "navigation": "bottom_tabs",
+  "icon_set": "Phosphor",
+  "glassmorphism": {
+    "enabled": "true",
+    "do's": [
+      "Use blur on bottom tab bar to allow map to bleed under",
+      "Use glass on sticky headers over scrolling alerts feed"
+    ],
+    "dont's": [
+      "Do not use blur on the SOS button or emergency sheets. They must be solid and high contrast."
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "expo-glass-effect",
+      "android": "expo-blur",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler",
+    "maps": "react-native-maps"
+  },
+  "screens": [
+    {
+      "name": "Início",
+      "purpose": "Provides instant access to the panic button and real-time location sharing.",
+      "states": {
+        "loading": "Centered spinner with 'Conectando à rede segura...' text.",
+        "empty": "N/A - Home is always active.",
+        "error": "Offline banner at the top, but SOS via SMS still enabled."
+      },
+      "layout": "Massive circular #FF6B35 SOS button dominating the center/upper-middle. Below it, a bento box grid with oversized cards for 'Compartilhar Localização' (Real-time tracking link) and 'Contatos de Emergência'. Minimal text, huge touch targets."
+    },
+    {
+      "name": "Mapa",
+      "purpose": "Collaborative risk map showing occurrences and safe zones.",
+      "states": {
+        "loading": "Map skeleton/spinner.",
+        "empty": "N/A - Map is always present.",
+        "error": "GPS failure banner: 'Sinal de GPS fraco'."
+      },
+      "layout": "Full-screen react-native-maps view. Search/Report FABs floating over the map. Bottom sheet to view nearby risk details or drop a new alert."
+    },
+    {
+      "name": "Alertas",
+      "purpose": "Chronological feed of moderated incidents reported by other drivers.",
+      "states": {
+        "loading": "Skeleton list rows.",
+        "empty": "Calm street illustration + 'Nenhuma ocorrência grave reportada na sua região.'",
+        "error": "Retry button + 'Não foi possível carregar os alertas.'"
+      },
+      "layout": "Sticky glassmorphic top header with horizontally scrolling category chips (Acidentes, Perigo, Polícia). Vertical list of large cards below. Each card uses high contrast colors based on threat level."
+    },
+    {
+      "name": "Perfil",
+      "purpose": "Manage driver profile, emergency contacts, subscription plans, and privacy (LGPD).",
+      "states": {
+        "loading": "Skeleton profile layout.",
+        "empty": "N/A",
+        "error": "Error loading user data with retry button."
+      },
+      "layout": "Header with abstract texture cover and user initials/avatar. Vertical list of settings: 'Contatos de Emergência', 'Assinatura ROTA SEGURA (R$)', 'Privacidade e LGPD' toggles, and 'Painel Admin' (if role allows)."
+    }
+  ],
+  "images": {
+    "empty_state_alerts": {
+      "url": "https://images.unsplash.com/photo-1617121346253-43ef95179ac9?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxOTF8MHwxfHNlYXJjaHwxfHxlbXB0eSUyMGNpdHklMjBzdHJlZXQlMjBjYWxtfGVufDB8fHx8MTc5Mzg5NTk3OXww&ixlib=rb-4.1.0&q=85",
+      "alt": "Rua vazia e calma sem alertas"
+    },
+    "profile_cover": {
+      "url": "https://images.unsplash.com/photo-1679193559894-5e27935d00c5?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzNDR8MHwxfHNlYXJjaHwxfHxhYnN0cmFjdCUyMG5hdnklMjBibHVlJTIwYW5kJTIwb3JhbmdlJTIwZ3JhZGllbnQlMjB0ZXh0dXJlfGVufDB8fHx8MTc5Mzg5NTk4MHww&ixlib=rb-4.1.0&q=85",
+      "alt": "Textura abstrata azul marinho"
+    }
+  },
+  "instructions_to_main_agent": [
+    "Prioritize accessibility: Use oversized touch targets, particularly on the Home screen. The SOS button should be the absolute focal point (min 150pt).",
+    "Adhere strictly to the requested visual identity: Navy Blue (#0B2545) and Orange (#FF6B35) on a Light White/Grey background.",
+    "Implement the SOS confirmation sheet using `@gorhom/bottom-sheet` to avoid accidental triggers, offering clear options to call 190/192/193 or message contacts.",
+    "Ensure all text is in Brazilian Portuguese (PT-BR) as requested.",
+    "Do NOT simulate fake alerts being sent to police. The SOS should only call the numbers or message configured contacts with explicit consent.",
+    "In the Alerts screen, use a gradient-to-dark scrim over the empty state image if it contains text overlay, to guarantee contrast."
+  ]
+}
