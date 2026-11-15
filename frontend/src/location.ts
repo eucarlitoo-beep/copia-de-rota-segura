@@ -4,10 +4,11 @@ import { useCallback, useEffect, useState } from "react";
 import { AppState } from "react-native";
 
 export type Coords = { lat: number; lng: number; accuracy: number | null };
-export type LocFailure = "denied" | "services_off" | "timeout" | "error";
+export type LocFailure = "denied" | "consent_required" | "services_off" | "timeout" | "error";
 
 export const FAILURE_TEXT: Record<LocFailure, string> = {
   denied: "Permissão de localização não concedida.",
+  consent_required: "Ative o consentimento de localização em Perfil > Privacidade e LGPD para usar este recurso.",
   services_off: "O GPS do aparelho está desligado. Ative a localização.",
   timeout: "Sinal de GPS fraco. Tente em local aberto.",
   error: "Não foi possível obter sua localização.",

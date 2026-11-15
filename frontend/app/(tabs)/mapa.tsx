@@ -5,6 +5,7 @@ import * as Location from "expo-location";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { api } from "@/src/api";
+import { useAuth } from "@/src/auth";
 import { CATEGORIES, catOf, F, R, S } from "@/src/constants";
 import { MapAlert, MapPosition, RiskMap } from "@/src/components/RiskMap";
 import { Banner, Btn, Field, Icon, Sheet, Txt, useToast } from "@/src/components/ui";
@@ -35,6 +36,7 @@ export default function Mapa() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const online = useOnline();
+  const { user } = useAuth();
   const toast = useToast();
   const perm = useLocationPermission();
   const [alerts, setAlerts] = useState<MapAlert[]>([]);
@@ -84,6 +86,7 @@ export default function Mapa() {
 
   const startNavigation = async () => {
     if (destination.trim().length < 3) return toast("Informe um destino para calcular a rota.", "error");
+    if (!user?.location_consent) return toast("Ative o consentimento em Perfil > Privacidade e LGPD para iniciar a navegação GPS.", "error");
     setNavigationBusy(true);
     try {
       if (!perm.granted && !(await perm.request())) {
@@ -174,13 +177,19 @@ export default function Mapa() {
     const referenceTime = alertsUpdatedAt?.getTime() ?? 0;
     return (!category || a.category === category) && Number.isFinite(createdAt) && referenceTime - createdAt <= hours * 60 * 60 * 1000;
   });
-  const locationError = gpsErr ?? (perm.loaded && !perm.granted ? "denied" : null);
+  const locationError: LocFailure | null = !user?.location_consent
+    ? "consent_required"
+    : gpsErr ?? (perm.loaded && !perm.granted ? "denied" : null);
   const nextManeuver = routeInfo?.steps[activeStepIndex] ?? routeInfo?.steps[0];
   const nextManeuverDistance = currentPosition && nextManeuver?.location
     ? Math.round(distanceToManeuver(currentPosition, nextManeuver.location))
     : Math.round(nextManeuver?.distance ?? routeInfo?.distance ?? 0);
 
   const locate = useCallback(async () => {
+    if (!user?.location_consent) {
+      setGpsErr("consent_required");
+      return;
+    }
     const r = await getCurrentCoords();
     if (r.ok) {
       const reg = { ...REGION, latitude: r.coords.lat, longitude: r.coords.lng };
@@ -197,14 +206,14 @@ export default function Mapa() {
     } else {
       setGpsErr(r.reason);
     }
-  }, []);
+  }, [user?.location_consent]);
 
   useFocusEffect(
     useCallback(() => {
       refreshAlerts();
-      if (perm.granted) locate();
+      if (perm.granted && user?.location_consent) locate();
       return stopNavigation;
-    }, [perm.granted, locate, refreshAlerts, stopNavigation]),
+    }, [perm.granted, user?.location_consent, locate, refreshAlerts, stopNavigation]),
   );
 
   const report = () => {
@@ -282,8 +291,8 @@ export default function Mapa() {
             kind="error"
             text={locationError === "denied" ? "Localização desativada. Permita o acesso ou escolha sua cidade manualmente." : FAILURE_TEXT[locationError]}
             action={
-              <Pressable testID="map-gps-fix" onPress={() => (locationError === "denied" ? setAskLoc(true) : locate())} hitSlop={8}>
-                <Txt style={s.bannerAction}>{locationError === "denied" ? "Ativar" : "Tentar"}</Txt>
+              <Pressable testID="map-gps-fix" onPress={() => (locationError === "consent_required" ? router.push("/privacy") : locationError === "denied" ? setAskLoc(true) : locate())} hitSlop={8}>
+                <Txt style={s.bannerAction}>{locationError === "consent_required" ? "Privacidade" : locationError === "denied" ? "Ativar" : "Tentar"}</Txt>
               </Pressable>
             }
           />
@@ -295,7 +304,7 @@ export default function Mapa() {
         {travelMode === "walking" ? <Pressable accessibilityRole="link" onPress={() => Linking.openURL("https://www.openstreetmap.org/copyright")}><Txt style={s.sourceAttribution}>Rotas a pé: OpenStreetMap · FOSSGIS</Txt></Pressable> : null}
       </View> : null}
       {!navigationMode ? <View style={[s.fabs, { bottom: bottomChrome + S.lg }]}>
-        {perm.granted ? (
+        {perm.granted && user?.location_consent ? (
           <Pressable testID="map-locate-button" accessibilityLabel="Minha localização" onPress={locate} style={s.fabSmall}>
             <Icon name="locate" size={24} color={colors.brand} />
           </Pressable>
@@ -331,7 +340,9 @@ export default function Mapa() {
       <Sheet visible={askLoc} onClose={() => setAskLoc(false)} testID="map-permission-sheet">
         <Txt variant="h2">Ver riscos perto de você</Txt>
         <Txt style={{ marginVertical: S.md }}>Usamos sua localização apenas enquanto o app está aberto, para centralizar o mapa. Ela não é publicada.</Txt>
-        {perm.canAskAgain ? (
+        {!user?.location_consent ? (
+          <Btn testID="map-consent-settings" label="Ativar em Privacidade" icon="shield-checkmark" onPress={() => { setAskLoc(false); router.push("/privacy"); }} />
+        ) : perm.canAskAgain ? (
           <Btn testID="map-permission-allow" label="Permitir localização" icon="location" onPress={async () => { setAskLoc(false); if (await perm.request()) locate(); }} />
         ) : (
           <Btn testID="map-permission-settings" label="Abrir Configurações" icon="settings" variant="navy" onPress={() => { setAskLoc(false); Linking.openSettings(); }} />

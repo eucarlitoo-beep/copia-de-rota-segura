@@ -5,6 +5,7 @@ para facilitar a migração futura para Supabase/Postgres (ver /app/docs/ARQUITE
 """
 import asyncio
 import hashlib
+import hmac
 import logging
 import os
 import re
@@ -16,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
 from typing import List, Literal, Optional
+from urllib.parse import quote
 
 import bcrypt
 import jwt
@@ -23,11 +25,13 @@ import stripe
 import httpx
 from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr, Field
 from pymongo import ASCENDING, DESCENDING, IndexModel
+from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 from starlette.middleware.cors import CORSMiddleware
 
 from email_service import send_email
@@ -49,12 +53,21 @@ INDEXES: dict[str, list[IndexModel]] = {
     "alerts": [IndexModel([("id", ASCENDING)], name="id", unique=True), IndexModel([("status", ASCENDING), ("created_at", DESCENDING)], name="status_created")],
     "incidents": [IndexModel([("user_id", ASCENDING), ("created_at", DESCENDING)], name="user_created")],
     "shares": [IndexModel([("token", ASCENDING)], name="token", unique=True)],
-    "notifications": [IndexModel([("user_id", ASCENDING), ("created_at", DESCENDING)], name="user_created")],
+    "notifications": [IndexModel([("user_id", ASCENDING), ("created_at", DESCENDING)], name="user_created"),
+                      IndexModel([("push_status", ASCENDING), ("push_next_attempt_at", ASCENDING)], name="push_delivery")],
     "community_messages": [IndexModel([("created_at", DESCENDING)], name="created_at"), IndexModel([("user_id", ASCENDING), ("created_at", DESCENDING)], name="user_created")],
     "push_tokens": [IndexModel([("token", ASCENDING)], name="token", unique=True), IndexModel([("user_id", ASCENDING)], name="user_id")],
     "plans": [IndexModel([("id", ASCENDING)], name="id", unique=True)],
     "payment_transactions": [IndexModel([("session_id", ASCENDING)], name="session_id", unique=True)],
-    "login_attempts": [IndexModel([("key", ASCENDING)], name="key", unique=True)],
+    "login_attempts": [IndexModel([("key", ASCENDING)], name="key", unique=True),
+                       IndexModel([("expires_at", ASCENDING)], name="expires_at_ttl", expireAfterSeconds=0)],
+    "revoked_tokens": [IndexModel([("token_id", ASCENDING)], name="token_id", unique=True),
+                        IndexModel([("expires_at", ASCENDING)], name="expires_at_ttl", expireAfterSeconds=0)],
+    "rate_limits": [IndexModel([("key", ASCENDING)], name="key", unique=True), IndexModel([("expires_at", ASCENDING)], name="expires_at_ttl", expireAfterSeconds=0)],
+    "provider_throttles": [IndexModel([("key", ASCENDING)], name="key", unique=True)],
+    "admin_audit_logs": [IndexModel([("created_at", DESCENDING)], name="created_at"),
+                         IndexModel([("admin_id", ASCENDING), ("created_at", DESCENDING)], name="admin_created"),
+                         IndexModel([("expires_at", ASCENDING)], name="expires_at_ttl", expireAfterSeconds=0)],
     "feedback": [IndexModel([("user_id", ASCENDING), ("created_at", DESCENDING)], name="user_created_feedback")],
     "authorities": [IndexModel([("id", ASCENDING)], name="id", unique=True)],
 }
@@ -67,6 +80,9 @@ async def ensure_indexes() -> None:
                 await db[coll].create_indexes([m])
             except Exception as exc:
                 logger.error("ensure_indexes(%s.%s): %s", coll, m.document["name"], exc)
+                if ((coll in ("rate_limits", "login_attempts") and m.document.get("name") == "key")
+                        or (coll == "revoked_tokens" and m.document.get("name") == "token_id")):
+                    raise
 
 
 def now() -> datetime:
@@ -77,6 +93,52 @@ def iso(d: datetime) -> str:
     return d.isoformat()
 
 
+async def enforce_rate_limit(scope: str, identity: str, limit: int, window_seconds: int) -> None:
+    """Shared Mongo-backed fixed-window limit; identity values never persist in clear text."""
+    instant = now()
+    epoch = int(instant.timestamp())
+    bucket = epoch // window_seconds
+    digest = hmac.new(JWT_SECRET.encode(), f"{scope}\0{identity}\0{bucket}".encode(), hashlib.sha256).hexdigest()
+    expires_at = datetime.fromtimestamp((bucket + 1) * window_seconds + 60, timezone.utc)
+    query = {"key": digest}
+    subject_hash = hmac.new(JWT_SECRET.encode(), identity.encode(), hashlib.sha256).hexdigest()
+    update = {"$inc": {"count": 1}, "$setOnInsert": {"expires_at": expires_at, "subject_hash": subject_hash}}
+    try:
+        row = await db.rate_limits.find_one_and_update(query, update, upsert=True, return_document=ReturnDocument.AFTER)
+    except DuplicateKeyError:
+        # Another request created this bucket at the same time.
+        row = await db.rate_limits.find_one_and_update(query, {"$inc": {"count": 1}}, return_document=ReturnDocument.AFTER)
+    if row and row.get("count", 0) > limit:
+        retry_after = max(1, (bucket + 1) * window_seconds - epoch)
+        raise HTTPException(429, "Muitas solicitações. Aguarde e tente novamente.", headers={"Retry-After": str(retry_after)})
+
+
+async def reserve_provider_slot(key: str, interval_seconds: float) -> None:
+    """Reserve a paced slot across all API workers using one atomic Mongo update."""
+    instant = now()
+    interval_ms = int(interval_seconds * 1000)
+    previous = {"$ifNull": ["$next_at", {"$literal": instant}]}
+    scheduled = {"$let": {
+        "vars": {"previous": previous},
+        "in": {"$add": [{"$cond": [{"$gt": ["$$previous", instant]}, "$$previous", instant]}, interval_ms]},
+    }}
+    update_pipeline = [{"$set": {"key": {"$literal": key}, "next_at": scheduled}}]
+    query = {"key": key}
+    try:
+        reservation = await db.provider_throttles.find_one_and_update(
+            query, update_pipeline, upsert=True, return_document=ReturnDocument.AFTER,
+        )
+    except DuplicateKeyError:
+        # Concurrent first requests can race to insert the shared throttle row.
+        reservation = await db.provider_throttles.find_one_and_update(
+            query, update_pipeline, return_document=ReturnDocument.AFTER,
+        )
+    slot = reservation["next_at"] - timedelta(milliseconds=interval_ms)
+    delay = (slot - instant).total_seconds()
+    if delay > 0:
+        await asyncio.sleep(delay)
+
+
 def new_id() -> str:
     return str(uuid.uuid4())
 
@@ -84,10 +146,44 @@ def new_id() -> str:
 app = FastAPI(title="ROTA SEGURA API")
 
 
+@app.middleware("http")
+async def audit_admin_requests(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/api/admin/"):
+        authorization = request.headers.get("Authorization", "")
+        if authorization.startswith("Bearer "):
+            try:
+                uid = jwt.decode(authorization[7:], JWT_SECRET, algorithms=[JWT_ALG])["sub"]
+                admin = await db.users.find_one({"id": uid, "role": "admin"}, {"_id": 0, "id": 1})
+                if admin:
+                    created_at = now()
+                    await db.admin_audit_logs.insert_one({
+                        "id": new_id(), "admin_id": uid, "method": request.method,
+                        "path": request.url.path, "status_code": response.status_code,
+                        "created_at": iso(created_at), "expires_at": created_at + timedelta(days=365),
+                    })
+            except Exception:
+                # Audit failures must be visible operationally but must not break
+                # the underlying admin response.
+                logger.exception("Could not write admin audit record")
+    return response
+
+
 @app.get("/health", include_in_schema=False)
 @app.head("/health", include_in_schema=False)
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/health/ready", include_in_schema=False)
+async def readiness():
+    """Readiness probe: liveness stays independent from transient database outages."""
+    try:
+        await db.command("ping")
+    except Exception:
+        logger.exception("Database readiness check failed")
+        return JSONResponse({"status": "not_ready"}, status_code=503)
+    return {"status": "ready", "database": "ok"}
 
 
 api = APIRouter(prefix="/api")
@@ -136,6 +232,11 @@ def make_token(uid: str) -> str:
     return jwt.encode({"sub": uid, "exp": now() + timedelta(days=TOKEN_DAYS), "iat": now()}, JWT_SECRET, algorithm=JWT_ALG)
 
 
+def token_fingerprint(token: str) -> str:
+    """One-way identifier for revocation records; never persist the bearer token."""
+    return hmac.new(JWT_SECRET.encode(), token.encode(), hashlib.sha256).hexdigest()
+
+
 def is_premium(u: dict) -> bool:
     exp = u.get("plan_expires_at")
     return u.get("plan", "gratuito") != "gratuito" and bool(exp) and datetime.fromisoformat(exp) > now()
@@ -157,9 +258,12 @@ async def current_user(cred: Optional[HTTPAuthorizationCredentials] = Depends(be
     if not cred:
         raise HTTPException(401, "Não autenticado")
     try:
-        uid = jwt.decode(cred.credentials, JWT_SECRET, algorithms=[JWT_ALG])["sub"]
+        claims = jwt.decode(cred.credentials, JWT_SECRET, algorithms=[JWT_ALG])
+        uid = claims["sub"]
     except jwt.InvalidTokenError:
         raise HTTPException(401, "Sessão expirada. Entre novamente.")
+    if await db.revoked_tokens.find_one({"token_id": token_fingerprint(cred.credentials)}, {"_id": 1}):
+        raise HTTPException(401, "Esta sessão foi encerrada. Entre novamente.")
     u = await db.users.find_one({"id": uid}, {"_id": 0})
     if not u:
         raise HTTPException(401, "Usuário não encontrado")
@@ -174,30 +278,107 @@ async def admin_user(u: dict = Depends(current_user)) -> dict:
     return u
 
 
-async def deliver_push(user_id: str, title: str, body: str, kind: str) -> None:
-    tokens = await db.push_tokens.find({"user_id": user_id}, {"_id": 0, "token": 1}).to_list(100)
+async def deliver_push(job: dict) -> str:
+    tokens = await db.push_tokens.find({"user_id": job["user_id"]}, {"_id": 0, "token": 1}).to_list(500)
     if not tokens:
-        return
-    messages = [{"to": item["token"], "title": title, "body": body[:240], "sound": "default", "priority": "high",
-                 "data": {"kind": kind}} for item in tokens]
-    try:
-        async with httpx.AsyncClient(timeout=8) as session:
-            for start in range(0, len(messages), 100):
-                response = await session.post("https://exp.host/--/api/v2/push/send", json=messages[start:start + 100],
-                                              headers={"Accept": "application/json", "Content-Type": "application/json"})
-                response.raise_for_status()
-    except Exception as exc:
-        logger.warning("Expo push delivery failed for user %s: %s", user_id, exc)
+        return "no_devices"
+    messages = [{"to": item["token"], "title": job["title"], "body": job["body"][:240], "sound": "default", "priority": "high",
+                 "data": {"kind": job["kind"]}} for item in tokens]
+    has_retryable_failure = False
+    async with httpx.AsyncClient(timeout=8) as session:
+        for start in range(0, len(messages), 100):
+            batch = messages[start:start + 100]
+            response = await session.post("https://exp.host/--/api/v2/push/send", json=batch,
+                                          headers={"Accept": "application/json", "Content-Type": "application/json"})
+            response.raise_for_status()
+            payload = response.json()
+            tickets = payload.get("data", [])
+            if isinstance(tickets, dict):
+                tickets = [tickets]
+            if not isinstance(tickets, list) or len(tickets) != len(batch):
+                raise ValueError("Expo push returned an unexpected ticket response")
+            for index, ticket in enumerate(tickets):
+                if ticket.get("status") == "ok":
+                    continue
+                error = (ticket.get("details") or {}).get("error")
+                if error == "DeviceNotRegistered":
+                    await db.push_tokens.delete_one({"token": batch[index]["to"]})
+                else:
+                    has_retryable_failure = True
+    return "retry" if has_retryable_failure else "delivered"
+
+
+async def push_worker() -> None:
+    """Durable at-least-once outbox worker; retries transient Expo failures."""
+    while True:
+        instant = now()
+        current = iso(instant)
+        try:
+            claim = await db.notifications.find_one_and_update(
+                {"$or": [
+                    {"push_status": {"$in": ["pending", "retry"]}, "push_next_attempt_at": {"$lte": current}},
+                    {"push_status": "sending", "push_lease_until": {"$lte": current}},
+                ]},
+                {"$set": {"push_status": "sending", "push_lease_until": iso(instant + timedelta(minutes=3))}, "$inc": {"push_attempts": 1}},
+                sort=[("push_next_attempt_at", ASCENDING)], return_document=ReturnDocument.AFTER,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Could not claim a push job")
+            await asyncio.sleep(2)
+            continue
+        if not claim:
+            await asyncio.sleep(1)
+            continue
+        try:
+            result = await deliver_push(claim)
+            if result == "retry":
+                raise RuntimeError("Expo rejected one or more push tickets")
+            terminal = {"push_status": result, "push_finished_at": iso(now())}
+            await db.notifications.update_one({"id": claim["id"], "push_status": "sending"}, {"$set": terminal, "$unset": {"push_lease_until": ""}})
+        except asyncio.CancelledError:
+            # Shutdown should not fail just because Mongo is already closing;
+            # the lease lets another worker reclaim this job after restart.
+            with suppress(Exception):
+                await db.notifications.update_one(
+                    {"id": claim["id"], "push_status": "sending"},
+                    {"$set": {"push_status": "retry", "push_next_attempt_at": iso(now())},
+                     "$unset": {"push_lease_until": ""}},
+                )
+            raise
+        except Exception:
+            attempts = claim.get("push_attempts", 1)
+            if attempts >= 5:
+                state = {"push_status": "failed", "push_finished_at": iso(now())}
+            else:
+                delay = min(3600, 15 * (2 ** (attempts - 1)))
+                state = {"push_status": "retry", "push_next_attempt_at": iso(now() + timedelta(seconds=delay))}
+            try:
+                await db.notifications.update_one(
+                    {"id": claim["id"], "push_status": "sending"},
+                    {"$set": state, "$unset": {"push_lease_until": ""}},
+                )
+            except Exception:
+                # Do not kill the long-lived worker; the sending lease is the
+                # recovery path if Mongo cannot persist retry metadata now.
+                logger.exception("Could not persist retry state for push job %s", claim["id"])
+            logger.exception("Expo push job %s failed (attempt %s)", claim["id"], attempts)
 
 
 async def notify(user_id: str, title: str, body: str, kind: str = "info"):
-    await db.notifications.insert_one({"id": new_id(), "user_id": user_id, "title": title, "body": body,
-                                       "kind": kind, "read": False, "created_at": iso(now())})
-    asyncio.create_task(deliver_push(user_id, title, body, kind))
+    notification_id = new_id()
+    created_at = now()
+    await db.notifications.insert_one({"id": notification_id, "user_id": user_id, "title": title, "body": body,
+                                       "kind": kind, "read": False, "created_at": iso(created_at),
+                                       "push_status": "pending", "push_attempts": 0,
+                                       "push_next_attempt_at": iso(created_at)})
 
 
 @api.post("/auth/register")
-async def register(body: RegisterIn):
+async def register(body: RegisterIn, request: Request):
+    client_ip = request.client.host if request.client else "unknown"
+    await enforce_rate_limit("register", client_ip, 10, 3600)
     if not body.lgpd_consent:
         raise HTTPException(400, "É necessário aceitar a Política de Privacidade (LGPD)")
     email = body.email.lower().strip()
@@ -207,34 +388,80 @@ async def register(body: RegisterIn):
          "phone": body.phone, "driver_type": body.driver_type, "vehicle": "", "city": "", "role": "user",
          "plan": "gratuito", "plan_expires_at": None, "blocked": False, "lgpd_consent_at": iso(now()),
          "location_consent": False, "created_at": iso(now())}
-    await db.users.insert_one(u)
-    await notify(u["id"], "Bem-vindo ao ROTA SEGURA", "Cadastre seus contatos de confiança para usar o SOS.")
+    try:
+        await db.users.insert_one(u)
+    except DuplicateKeyError:
+        # The unique email index is the source of truth when two registrations
+        # race past the earlier availability check.
+        raise HTTPException(409, "Este e-mail já está cadastrado")
+    try:
+        await notify(u["id"], "Bem-vindo ao ROTA SEGURA", "Cadastre seus contatos de confiança para usar o SOS.")
+    except Exception:
+        # Account creation should not appear to fail after the user record has
+        # already been committed just because the welcome notice could not be saved.
+        logger.exception("Could not create the welcome notification for user %s", u["id"])
     return {"token": make_token(u["id"]), "user": public_user(u)}
 
 
 @api.post("/auth/login")
-async def login(body: LoginIn):
+async def login(body: LoginIn, request: Request):
     email = body.email.lower().strip()
-    att = await db.login_attempts.find_one({"key": email}, {"_id": 0})
+    client_ip = request.client.host if request.client else "unknown"
+    await enforce_rate_limit("login-ip", client_ip, 60, 60)
+    email_hash = hmac.new(JWT_SECRET.encode(), email.encode(), hashlib.sha256).hexdigest()
+    attempt_key = hmac.new(JWT_SECRET.encode(), f"{email}\0{client_ip}".encode(), hashlib.sha256).hexdigest()
+    # Only use the socket peer address. Forwarded headers are attacker-controlled
+    # unless a trusted proxy has been explicitly configured.
+    # The per-account lockout used to let anyone lock a victim out by email alone.
+    # Bind the temporary counter to both the normalized email and source address.
+    # Drop legacy rows whose key was the raw email from the earlier implementation.
+    await db.login_attempts.delete_one({"key": email})
+    u = await db.users.find_one({"email": email}, {"_id": 0})
+    if u and verify_pw(body.password, u["password_hash"]):
+        # A valid password must always work, even when this IP/email pair is
+        # throttled; otherwise a third party could still lock out the account.
+        await db.login_attempts.delete_one({"key": attempt_key})
+        if u.get("blocked"):
+            raise HTTPException(403, "Conta suspensa. Fale com o suporte.")
+        return {"token": make_token(u["id"]), "user": public_user(u)}
+    att = await db.login_attempts.find_one({"key": attempt_key}, {"_id": 0})
     if att and att.get("locked_until") and datetime.fromisoformat(att["locked_until"]) > now():
         raise HTTPException(429, "Muitas tentativas. Tente novamente em 15 minutos.")
-    u = await db.users.find_one({"email": email}, {"_id": 0})
-    if not u or not verify_pw(body.password, u["password_hash"]):
-        count = (att or {}).get("count", 0) + 1
-        upd = {"count": count}
-        if count >= 5:
-            upd = {"count": 0, "locked_until": iso(now() + timedelta(minutes=15))}
-        await db.login_attempts.update_one({"key": email}, {"$set": upd}, upsert=True)
-        raise HTTPException(401, "E-mail ou senha incorretos")
-    await db.login_attempts.delete_one({"key": email})
-    if u.get("blocked"):
-        raise HTTPException(403, "Conta suspensa. Fale com o suporte.")
-    return {"token": make_token(u["id"]), "user": public_user(u)}
+    if att and att.get("locked_until"):
+        await db.login_attempts.delete_one({"key": attempt_key})
+        att = None
+    updated = await db.login_attempts.find_one_and_update(
+        {"key": attempt_key},
+        {"$inc": {"count": 1}, "$set": {"expires_at": now() + timedelta(days=1)},
+         "$setOnInsert": {"email_hash": email_hash}},
+        upsert=True, return_document=ReturnDocument.AFTER,
+    )
+    count = updated.get("count", 1)
+    if count >= 5:
+        await db.login_attempts.update_one({"key": attempt_key}, {"$set": {"count": 0, "locked_until": iso(now() + timedelta(minutes=15))}})
+    raise HTTPException(401, "E-mail ou senha incorretos")
 
 
 @api.get("/auth/me")
 async def me(u: dict = Depends(current_user)):
     return public_user(u)
+
+
+@api.post("/auth/logout")
+async def revoke_session(cred: HTTPAuthorizationCredentials = Depends(bearer), _: dict = Depends(current_user)):
+    """Revoke only the presented access token; other devices remain signed in."""
+    claims = jwt.decode(cred.credentials, JWT_SECRET, algorithms=[JWT_ALG])
+    expires_at = datetime.fromtimestamp(claims["exp"], timezone.utc)
+    try:
+        await db.revoked_tokens.insert_one({
+            "token_id": token_fingerprint(cred.credentials),
+            "expires_at": expires_at,
+            "created_at": iso(now()),
+        })
+    except DuplicateKeyError:
+        # Makes repeated logout calls harmless if the network retries.
+        pass
+    return {"ok": True}
 
 
 @api.put("/profile")
@@ -250,6 +477,9 @@ class ConsentIn(BaseModel):
 @api.put("/privacy/consent")
 async def set_consent(body: ConsentIn, u: dict = Depends(current_user)):
     await db.users.update_one({"id": u["id"]}, {"$set": {"location_consent": body.location_consent}})
+    if not body.location_consent:
+        # Revoking consent also revokes active bearer links immediately.
+        await db.shares.update_many({"user_id": u["id"], "active": True}, {"$set": {"active": False}})
     return {"ok": True}
 
 
@@ -259,19 +489,23 @@ class GeocodeIn(BaseModel):
 
 _geocode_lock = asyncio.Lock()
 _geocode_last_request = 0.0
+GEOCODING_BASE_URL = os.environ.get("GEOCODING_BASE_URL", "https://nominatim.openstreetmap.org").rstrip("/")
+GEOCODING_USER_AGENT = os.environ.get("GEOCODING_USER_AGENT", "ROTA-SEGURA/1.0")
 
 
 @api.post("/location/geocode")
-async def geocode_city(body: GeocodeIn, _: dict = Depends(current_user)):
+async def geocode_city(body: GeocodeIn, u: dict = Depends(current_user)):
     """Busca a cidade indicada pelo usuário; sem coordenada fixa no cliente."""
     global _geocode_last_request
+    await enforce_rate_limit("geocode", u["id"], 10, 60)
     try:
         async with _geocode_lock:
             delay = 1.05 - (time.monotonic() - _geocode_last_request)
             if delay > 0:
                 await asyncio.sleep(delay)
-            async with httpx.AsyncClient(timeout=8, headers={"User-Agent": "RotaSegura/1.0 (city selection)"}) as client:
-                response = await client.get("https://nominatim.openstreetmap.org/search", params={
+            await reserve_provider_slot("nominatim-public", 1.05)
+            async with httpx.AsyncClient(timeout=8, headers={"User-Agent": GEOCODING_USER_AGENT}) as client:
+                response = await client.get(f"{GEOCODING_BASE_URL}/search", params={
                     "q": body.query, "format": "jsonv2", "limit": 1, "addressdetails": 1, "countrycodes": "br",
                 })
                 _geocode_last_request = time.monotonic()
@@ -301,6 +535,7 @@ class FeedbackIn(BaseModel):
 
 @api.post("/feedback", status_code=201)
 async def create_feedback(body: FeedbackIn, u: dict = Depends(current_user)):
+    await enforce_rate_limit("feedback", u["id"], 10, 86400)
     message = body.message.strip()
     if len(message) < 5:
         raise HTTPException(422, "Escreva pelo menos 5 caracteres")
@@ -322,8 +557,15 @@ async def export_data(u: dict = Depends(current_user)):
         "contatos": await db.contacts.find(q, {"_id": 0}).to_list(100),
         "incidentes": await db.incidents.find(q, {"_id": 0}).to_list(1000),
         "alertas_enviados": await db.alerts.find({"reporter_id": u["id"]}, {"_id": 0, "reporter_id": 0, "flagged_by": 0, "confirmed_by": 0}).to_list(1000),
-        "compartilhamentos": await db.shares.find(q, {"_id": 0}).to_list(1000),
+        # Link tokens are access credentials, so export metadata but not secrets.
+        "compartilhamentos": await db.shares.find(q, {"_id": 0, "token": 0}).to_list(1000),
+        "notificacoes": await db.notifications.find(q, {"_id": 0, "push_status": 0, "push_attempts": 0,
+                                                         "push_next_attempt_at": 0, "push_lease_until": 0, "push_finished_at": 0}).to_list(1000),
         "contribuicoes": await db.feedback.find(q, {"_id": 0}).to_list(1000),
+        "mensagens_comunidade": await db.community_messages.find(q, {"_id": 0, "user_id": 0, "reporter_ids": 0}).to_list(1000),
+        # Stripe session IDs act as bearer identifiers and are intentionally omitted.
+        "pagamentos": await db.payment_transactions.find(q, {"_id": 0, "user_id": 0, "session_id": 0}).to_list(1000),
+        "dispositivos_notificacao": await db.push_tokens.find(q, {"_id": 0, "user_id": 0, "token": 0}).to_list(100),
         "exportado_em": iso(now()),
     }
 
@@ -332,10 +574,46 @@ async def export_data(u: dict = Depends(current_user)):
 async def delete_account(u: dict = Depends(current_user)):
     """LGPD - eliminação dos dados pessoais. Alertas aprovados ficam anônimos."""
     q = {"user_id": u["id"]}
-    for c in ("contacts", "incidents", "shares", "notifications", "payment_transactions", "feedback"):
+    subscriptions = await db.payment_transactions.find(
+        {**q, "subscription_id": {"$exists": True}}, {"_id": 0, "subscription_id": 1}
+    ).to_list(20)
+    if subscriptions:
+        stripe_ready()
+        for transaction in subscriptions:
+            try:
+                subscription = await asyncio.to_thread(stripe.Subscription.retrieve, transaction["subscription_id"])
+                status = stripe_field(subscription, "status", "unknown")
+                if status in ("active", "trialing", "past_due") and not stripe_field(subscription, "cancel_at_period_end", False):
+                    subscription = await asyncio.to_thread(
+                        stripe.Subscription.modify, transaction["subscription_id"], cancel_at_period_end=True
+                    )
+                if status in ("active", "trialing", "past_due"):
+                    items = stripe_field(stripe_field(subscription, "items", {}), "data", []) or []
+                    ends = [stripe_field(item, "current_period_end") for item in items]
+                    ends = [value for value in ends if isinstance(value, (int, float))]
+                    period_end = max(ends) if ends else stripe_field(subscription, "current_period_end")
+                    updates = {"subscription_status": status, "cancel_at_period_end": True}
+                    if isinstance(period_end, (int, float)):
+                        updates["current_period_end"] = iso(datetime.fromtimestamp(period_end, timezone.utc))
+                    await db.payment_transactions.update_one(
+                        {"subscription_id": transaction["subscription_id"], **q}, {"$set": updates}
+                    )
+            except stripe.error.StripeError as exc:
+                logger.error("Could not schedule Stripe cancellation before account deletion: %s", exc)
+                raise HTTPException(502, "Não foi possível cancelar a renovação na Stripe. Sua conta continua ativa; tente novamente.")
+    for c in ("contacts", "incidents", "shares", "notifications", "feedback", "community_messages", "push_tokens"):
         await db[c].delete_many(q)
+    # Retain only de-identified accounting data; drop identifiers that could
+    # retrieve the Stripe Checkout session or reconnect it to this account.
+    await db.payment_transactions.update_many(
+        q, {"$set": {"account_deleted": True}, "$unset": {"user_id": "", "session_id": "", "subscription_id": ""}}
+    )
     await db.alerts.update_many({"reporter_id": u["id"]}, {"$set": {"reporter_id": None}})
     await db.alerts.update_many({"$or": [{"confirmed_by": u["id"]}, {"flagged_by": u["id"]}]}, {"$pull": {"confirmed_by": u["id"], "flagged_by": u["id"]}})
+    email_hash = hmac.new(JWT_SECRET.encode(), u["email"].lower().strip().encode(), hashlib.sha256).hexdigest()
+    await db.login_attempts.delete_many({"$or": [{"email_hash": email_hash}, {"key": u["email"].lower().strip()}]})
+    subject_hash = hmac.new(JWT_SECRET.encode(), u["id"].encode(), hashlib.sha256).hexdigest()
+    await db.rate_limits.delete_many({"subject_hash": subject_hash})
     await db.users.delete_one({"id": u["id"]})
     return {"ok": True}
 
@@ -384,9 +662,9 @@ async def del_contact(cid: str, u: dict = Depends(current_user)):
 
 # ---------------------------------------------------------------- SOS / Incidents
 class SosIn(BaseModel):
-    lat: Optional[float] = None
-    lng: Optional[float] = None
-    accuracy: Optional[float] = None
+    lat: Optional[float] = Field(default=None, ge=-90, le=90)
+    lng: Optional[float] = Field(default=None, ge=-180, le=180)
+    accuracy: Optional[float] = Field(default=None, ge=0, le=10000)
     note: str = Field(default="", max_length=200)
 
 
@@ -400,6 +678,10 @@ def maps_link(lat, lng) -> str:
 
 @api.post("/sos")
 async def create_sos(body: SosIn, u: dict = Depends(current_user)):
+    if (body.lat is None) != (body.lng is None):
+        raise HTTPException(422, "Informe latitude e longitude juntas.")
+    if body.lat is not None and not u.get("location_consent", False):
+        raise HTTPException(403, "Ative o consentimento de localização para incluir coordenadas no SOS.")
     inc = {"id": new_id(), "user_id": u["id"], "type": "sos", "lat": body.lat, "lng": body.lng,
            "accuracy": body.accuracy, "note": body.note, "actions": [], "status": "aberto", "created_at": iso(now())}
     await db.incidents.insert_one(inc)
@@ -433,7 +715,16 @@ async def sos_email(iid: str, u: dict = Depends(current_user)):
     contacts = await db.contacts.find({"user_id": u["id"], "email": {"$nin": [None, ""]}}, {"_id": 0}).to_list(10)
     if not contacts:
         raise HTTPException(400, "Nenhum contato com e-mail cadastrado")
-    link = maps_link(inc.get("lat"), inc.get("lng"))
+    await enforce_rate_limit("sos-email", u["id"], 3, 3600)
+    # Atomically claim this incident before contacting the mail provider so
+    # parallel taps/retries cannot send the same SOS twice.
+    claim = await db.incidents.update_one(
+        {"id": iid, "user_id": u["id"], "$or": [{"email_status": {"$exists": False}}, {"email_status": "failed"}]},
+        {"$set": {"email_status": "sending", "email_claimed_at": iso(now())}},
+    )
+    if not claim.modified_count:
+        raise HTTPException(409, "O envio deste SOS já foi iniciado ou concluído. Use SMS/WhatsApp se precisar avisar novamente.")
+    link = maps_link(inc.get("lat"), inc.get("lng")) if u.get("location_consent", False) else ""
     loc_html = (f'<p><a href="{escape(link)}" style="color:#FF6B35;font-weight:bold">Abrir localização no mapa</a></p>'
                 if link else "<p>A localização não estava disponível no momento do pedido.</p>")
     when = datetime.fromisoformat(inc["created_at"]).astimezone(timezone(timedelta(hours=-3))).strftime("%d/%m/%Y %H:%M")
@@ -451,10 +742,21 @@ async def sos_email(iid: str, u: dict = Depends(current_user)):
             sent += 1
         except HTTPException as e:
             logger.warning("SOS email to contact failed: %s", e.detail)
+        except Exception:
+            # A timeout can happen after a provider accepted the message. Keep
+            # this state non-retryable automatically to avoid duplicate SOS.
+            await db.incidents.update_one({"id": iid, "user_id": u["id"]}, {"$set": {"email_status": "uncertain"}})
+            logger.exception("SOS email outcome is uncertain for incident %s", iid)
+            raise HTTPException(502, "Não foi possível confirmar o envio. Verifique com seus contatos ou use SMS/WhatsApp/190.")
     if not sent:
+        await db.incidents.update_one({"id": iid, "user_id": u["id"]}, {"$set": {"email_status": "failed"}})
         raise HTTPException(502, "Não foi possível enviar os e-mails agora. Use WhatsApp/SMS ou ligue 190.")
-    await db.incidents.update_one({"id": iid}, {"$push": {"actions": {"action": "email", "at": iso(now()), "sent": sent}}})
-    return {"sent": sent, "total": len(contacts)}
+    status = "sent" if sent == len(contacts) else "partial"
+    await db.incidents.update_one(
+        {"id": iid, "user_id": u["id"]},
+        {"$set": {"email_status": status}, "$push": {"actions": {"action": "email", "at": iso(now()), "sent": sent, "total": len(contacts)}}},
+    )
+    return {"sent": sent, "total": len(contacts), "partial": status == "partial"}
 
 
 @api.get("/incidents")
@@ -466,14 +768,14 @@ async def incidents(u: dict = Depends(current_user)):
 
 # ---------------------------------------------------------------- Location sharing
 class ShareIn(BaseModel):
-    lat: float
-    lng: float
+    lat: float = Field(ge=-90, le=90)
+    lng: float = Field(ge=-180, le=180)
     hours: float = Field(default=1, gt=0, le=8)
 
 
 class LocIn(BaseModel):
-    lat: float
-    lng: float
+    lat: float = Field(ge=-90, le=90)
+    lng: float = Field(ge=-180, le=180)
 
 
 class GPSPoint(BaseModel):
@@ -500,7 +802,10 @@ OSRM_FOOT_BASE_URL = os.environ.get("OSRM_FOOT_BASE_URL", "https://routing.opens
 
 
 @api.post("/navigation/route")
-async def navigation_route(body: NavigationIn, _: dict = Depends(current_user)):
+async def navigation_route(body: NavigationIn, u: dict = Depends(current_user)):
+    await enforce_rate_limit("navigation-route", u["id"], 10, 60)
+    if not u.get("location_consent", False):
+        raise HTTPException(403, "Ative o consentimento de localização antes de calcular uma rota GPS.")
     routing_url = OSRM_BASE_URL if body.mode == "driving" else OSRM_FOOT_BASE_URL
     if not routing_url:
         raise HTTPException(503, "Rotas a pé ainda não estão configuradas neste servidor.")
@@ -529,7 +834,10 @@ async def navigation_route(body: NavigationIn, _: dict = Depends(current_user)):
 
 
 @api.post("/navigation/match")
-async def navigation_match(body: MatchIn, _: dict = Depends(current_user)):
+async def navigation_match(body: MatchIn, u: dict = Depends(current_user)):
+    await enforce_rate_limit("navigation-match", u["id"], 15, 60)
+    if not u.get("location_consent", False):
+        raise HTTPException(403, "Ative o consentimento de localização antes de enviar pontos GPS para ajuste da rota.")
     routing_url = OSRM_BASE_URL if body.mode == "driving" else OSRM_FOOT_BASE_URL
     if not routing_url:
         raise HTTPException(503, "Ajuste de trajeto a pé ainda não está configurado neste servidor.")
@@ -559,6 +867,9 @@ async def navigation_match(body: MatchIn, _: dict = Depends(current_user)):
 
 @api.post("/share")
 async def start_share(body: ShareIn, u: dict = Depends(current_user)):
+    await enforce_rate_limit("share-start", u["id"], 10, 3600)
+    if not u.get("location_consent", False):
+        raise HTTPException(403, "Ative o consentimento de localização antes de iniciar um compartilhamento.")
     hours = body.hours if is_premium(u) else min(body.hours, 1)
     await db.shares.update_many({"user_id": u["id"], "active": True}, {"$set": {"active": False}})
     s = {"id": new_id(), "token": secrets.token_urlsafe(16), "user_id": u["id"], "name": u["name"].split(" ")[0],
@@ -577,6 +888,10 @@ async def active_share(u: dict = Depends(current_user)):
 
 @api.put("/share/{sid}/location")
 async def update_share(sid: str, body: LocIn, u: dict = Depends(current_user)):
+    await enforce_rate_limit("share-location", u["id"], 20, 60)
+    if not u.get("location_consent", False):
+        await db.shares.update_one({"id": sid, "user_id": u["id"]}, {"$set": {"active": False}})
+        raise HTTPException(403, "O compartilhamento foi encerrado porque o consentimento de localização está desativado.")
     r = await db.shares.update_one({"id": sid, "user_id": u["id"], "active": True, "expires_at": {"$gt": iso(now())}},
                                    {"$set": {"lat": body.lat, "lng": body.lng, "updated_at": iso(now())}})
     if not r.matched_count:
@@ -590,24 +905,53 @@ async def stop_share(sid: str, u: dict = Depends(current_user)):
     return {"ok": True}
 
 
-@api.get("/public/share/{token}", response_class=HTMLResponse)
-async def public_share(token: str):
-    s = await db.shares.find_one({"token": token}, {"_id": 0})
-    style = "font-family:Arial,sans-serif;margin:0;padding:24px;background:#F4F5F7;color:#111827"
+SHARE_NO_STORE_HEADERS = {
+    "Cache-Control": "no-store, max-age=0",
+    "Pragma": "no-cache",
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+}
+
+
+class PublicShareIn(BaseModel):
+    token: str = Field(min_length=20, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+@api.get("/public/share", response_class=HTMLResponse)
+async def public_share_page():
+    """The bearer token stays in the URL fragment, which browsers never send to the server."""
+    page_headers = {
+        **SHARE_NO_STORE_HEADERS,
+        "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; frame-src https://www.openstreetmap.org; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    }
+    html = '''<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ROTA SEGURA - Localização</title><style>body{font-family:Arial,sans-serif;margin:0;padding:24px;background:#F4F5F7;color:#111827}h2{color:#0B2545;margin:0}iframe{width:100%;height:380px;border:0;border-radius:16px;margin-top:12px}a{display:inline-block;background:#FF6B35;color:white;padding:14px 20px;border-radius:12px;text-decoration:none;font-weight:bold;margin-top:14px}.small{font-size:12px;color:#6B7280}</style></head>
+<body><h2>ROTA SEGURA</h2><p id="status">Carregando localização compartilhada…</p><div id="map"></div><p id="updated"></p><a id="maps" hidden>Abrir no Google Maps</a><p class="small">Em caso de emergência, ligue 190.</p>
+<script>
+const statusEl=document.getElementById('status'),mapEl=document.getElementById('map'),updatedEl=document.getElementById('updated'),mapsEl=document.getElementById('maps');
+async function refresh(){const token=location.hash.slice(1);if(!token){statusEl.textContent='Link de compartilhamento inválido.';return}try{const r=await fetch('/api/public/share/data',{method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',body:JSON.stringify({token})});if(!r.ok){statusEl.textContent='Este compartilhamento foi encerrado ou expirou.';mapEl.replaceChildren();mapsEl.hidden=true;return}const d=await r.json();statusEl.textContent='Localização em tempo real de '+d.name;const iframe=document.createElement('iframe');const bbox=[d.lng-.01,d.lat-.006,d.lng+.01,d.lat+.006].join(',');iframe.title='Mapa com a localização compartilhada';iframe.referrerPolicy='no-referrer';iframe.src='https://www.openstreetmap.org/export/embed.html?bbox='+bbox+'&layer=mapnik&marker='+d.lat+','+d.lng;mapEl.replaceChildren(iframe);updatedEl.textContent='Última atualização: '+d.updated_at+' (Brasília). A página atualiza sozinha.';mapsEl.href='https://maps.google.com/?q='+d.lat+','+d.lng;mapsEl.hidden=false}catch(e){statusEl.textContent='Não foi possível carregar a localização. Verifique sua conexão.'}}
+refresh();setInterval(refresh,20000);
+</script></body></html>'''
+    return HTMLResponse(html, headers=page_headers)
+
+
+@api.post("/public/share/data")
+async def public_share_data(body: PublicShareIn, request: Request):
+    client_ip = request.client.host if request.client else "unknown"
+    await enforce_rate_limit("public-share", f"{body.token}:{client_ip}", 30, 60)
+    s = await db.shares.find_one({"token": body.token}, {"_id": 0, "name": 1, "lat": 1, "lng": 1, "updated_at": 1, "expires_at": 1, "active": 1})
     if not s or not s["active"] or datetime.fromisoformat(s["expires_at"]) < now():
-        return HTMLResponse(f'<html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="{style}">'
-                            '<h2 style="color:#0B2545">ROTA SEGURA</h2><p>Este compartilhamento de localização foi encerrado ou expirou.</p></body></html>')
-    lat, lng = s["lat"], s["lng"]
-    upd = datetime.fromisoformat(s["updated_at"]).astimezone(timezone(timedelta(hours=-3))).strftime("%d/%m %H:%M:%S")
-    bbox = f"{lng-0.01},{lat-0.006},{lng+0.01},{lat+0.006}"
-    return HTMLResponse(
-        f'<html><head><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="20">'
-        f'<title>ROTA SEGURA - Localização</title></head><body style="{style}">'
-        f'<h2 style="color:#0B2545;margin:0">ROTA SEGURA</h2><p>Localização em tempo real de <b>{escape(s["name"])}</b></p>'
-        f'<iframe width="100%" height="380" style="border:0;border-radius:16px" src="https://www.openstreetmap.org/export/embed.html?bbox={bbox}&layer=mapnik&marker={lat},{lng}"></iframe>'
-        f'<p>Última atualização: {upd} (Brasília). A página atualiza sozinha.</p>'
-        f'<p><a style="display:inline-block;background:#FF6B35;color:#fff;padding:14px 20px;border-radius:12px;text-decoration:none;font-weight:bold" href="{maps_link(lat, lng)}">Abrir no Google Maps</a></p>'
-        f'<p style="font-size:12px;color:#6B7280">Em caso de emergência, ligue 190.</p></body></html>')
+        raise HTTPException(404, "Compartilhamento encerrado ou expirado")
+    updated = datetime.fromisoformat(s["updated_at"]).astimezone(timezone(timedelta(hours=-3))).strftime("%d/%m %H:%M:%S")
+    return JSONResponse({"name": s["name"], "lat": s["lat"], "lng": s["lng"], "updated_at": updated}, headers=SHARE_NO_STORE_HEADERS)
+
+
+@api.get("/public/share/{token}")
+async def legacy_public_share(token: str):
+    """Upgrade old links to fragment-based URLs; new links never put tokens in paths."""
+    destination = f"/api/public/share#{quote(token, safe='')}"
+    return RedirectResponse(destination, status_code=307, headers={**SHARE_NO_STORE_HEADERS, "Location": destination})
 
 
 # ---------------------------------------------------------------- Alerts (moderated)
@@ -621,8 +965,8 @@ BAD_WORDS = ("ladrão", "ladrao", "bandido", "vagabundo", "safado", "criminoso")
 class AlertIn(BaseModel):
     category: Category
     description: str = Field(min_length=10, max_length=280)
-    lat: float
-    lng: float
+    lat: float = Field(ge=-90, le=90)
+    lng: float = Field(ge=-180, le=180)
     neighborhood: Optional[str] = Field(default=None, max_length=80)
 
 
@@ -643,6 +987,7 @@ def public_alert(a: dict, uid: str) -> dict:
 
 @api.post("/alerts")
 async def create_alert(body: AlertIn, u: dict = Depends(current_user)):
+    await enforce_rate_limit("create-alert", u["id"], 5, 86400)
     validate_text(body.description)
     since = iso(now() - timedelta(days=1))
     if await db.alerts.count_documents({"reporter_id": u["id"], "created_at": {"$gte": since}}) >= 5:
@@ -670,23 +1015,38 @@ async def neighborhood_alert_stats(hours: int = 720, _: dict = Depends(current_u
     """Aggregate approved community reports; no official crime statistics are implied."""
     window = min(max(hours, 1), 720)
     since = iso(now() - timedelta(hours=window))
-    rows = await db.alerts.find({"status": "aprovado", "created_at": {"$gte": since},
-                                "neighborhood": {"$type": "string", "$ne": ""}},
-                                {"_id": 0, "category": 1, "neighborhood": 1}).to_list(5000)
-    grouped: dict[str, dict] = {}
-    for row in rows:
-        name = row["neighborhood"].strip()
-        key = name.casefold()
-        item = grouped.setdefault(key, {"neighborhood": name, "total": 0, "categories": {}})
-        item["total"] += 1
-        category = row.get("category", "outro")
-        item["categories"][category] = item["categories"].get(category, 0) + 1
+    pipeline = [
+        {"$match": {"status": "aprovado", "created_at": {"$gte": since},
+                    "neighborhood": {"$type": "string", "$ne": ""}}},
+        {"$project": {
+            "name": {"$trim": {"input": "$neighborhood"}},
+            "category": {"$ifNull": ["$category", "outro"]},
+        }},
+        {"$match": {"name": {"$ne": ""}}},
+        {"$group": {
+            "_id": {"neighborhood": {"$toLower": "$name"}, "category": "$category"},
+            "name": {"$min": "$name"}, "count": {"$sum": 1},
+        }},
+        {"$group": {
+            "_id": "$_id.neighborhood", "neighborhood": {"$min": "$name"},
+            "total": {"$sum": "$count"},
+            "category_counts": {"$push": {"k": "$_id.category", "v": "$count"}},
+        }},
+        {"$sort": {"total": -1, "_id": 1}},
+        {"$limit": 20},
+    ]
+    rows = await db.alerts.aggregate(pipeline, allowDiskUse=True).to_list(20)
+    neighborhoods = [{
+        "neighborhood": row["neighborhood"], "total": row["total"],
+        "categories": {entry["k"]: entry["v"] for entry in row["category_counts"]},
+    } for row in rows]
     return {"source": "relatos aprovados da comunidade", "hours": window,
-            "neighborhoods": sorted(grouped.values(), key=lambda item: (-item["total"], item["neighborhood"].casefold()))[:20]}
+            "neighborhoods": neighborhoods}
 
 
 @api.post("/alerts/{aid}/confirm")
 async def confirm_alert(aid: str, u: dict = Depends(current_user)):
+    await enforce_rate_limit("alert-confirm", u["id"], 60, 3600)
     r = await db.alerts.update_one({"id": aid, "status": "aprovado", "confirmed_by": {"$ne": u["id"]}, "reporter_id": {"$ne": u["id"]}},
                                    {"$addToSet": {"confirmed_by": u["id"]}, "$inc": {"confirmations": 1}})
     if not r.matched_count:
@@ -700,6 +1060,7 @@ class FlagIn(BaseModel):
 
 @api.post("/alerts/{aid}/flag")
 async def flag_alert(aid: str, body: FlagIn, u: dict = Depends(current_user)):
+    await enforce_rate_limit("alert-flag", u["id"], 20, 86400)
     a = await db.alerts.find_one({"id": aid, "status": "aprovado"}, {"_id": 0})
     if not a:
         raise HTTPException(404, "Alerta não encontrado")
@@ -707,17 +1068,30 @@ async def flag_alert(aid: str, body: FlagIn, u: dict = Depends(current_user)):
         raise HTTPException(400, "Você não pode denunciar o próprio alerta")
     if u["id"] in a.get("flagged_by", []):
         raise HTTPException(409, "Denúncia já registrada")
-    upd: dict = {"$addToSet": {"flagged_by": u["id"]}, "$inc": {"flags": 1}, "$push": {"flag_reasons": body.reason}}
-    if a.get("flags", 0) + 1 >= 3:
-        upd["$set"] = {"status": "pendente"}  # volta à moderação
-    await db.alerts.update_one({"id": aid}, upd)
+    current_flags = {"$ifNull": ["$flags", 0]}
+    next_flags = {"$add": [current_flags, 1]}
+    result = await db.alerts.update_one(
+        {"id": aid, "status": "aprovado", "reporter_id": {"$ne": u["id"]}, "flagged_by": {"$ne": u["id"]}},
+        [{"$set": {
+            "flagged_by": {"$setUnion": [{"$ifNull": ["$flagged_by", []]}, [u["id"]]]},
+            "flag_reasons": {"$concatArrays": [{"$ifNull": ["$flag_reasons", []]}, [body.reason]]},
+            "flags": next_flags,
+            # Update the threshold in the same atomic operation as the count.
+            "status": {"$cond": [{"$gte": [next_flags, 3]}, "pendente", "$status"]},
+        }}],
+    )
+    if not result.matched_count:
+        raise HTTPException(409, "Denúncia já registrada ou alerta em moderação")
     return {"ok": True}
 
 
 # ---------------------------------------------------------------- Notifications
 @api.get("/notifications")
 async def notifications(u: dict = Depends(current_user)):
-    items = await db.notifications.find({"user_id": u["id"]}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    items = await db.notifications.find({"user_id": u["id"]}, {
+        "_id": 0, "push_status": 0, "push_attempts": 0, "push_next_attempt_at": 0,
+        "push_lease_until": 0, "push_finished_at": 0,
+    }).sort("created_at", -1).to_list(100)
     return {"items": items, "unread": sum(1 for i in items if not i["read"])}
 
 
@@ -733,6 +1107,7 @@ class PushTokenIn(BaseModel):
 
 @api.post("/push/token")
 async def register_push_token(body: PushTokenIn, request: Request, u: dict = Depends(current_user)):
+    await enforce_rate_limit("push-token-register", u["id"], 10, 3600)
     platform = request.headers.get("x-client-platform", "unknown")[:20]
     await db.push_tokens.update_one({"token": body.token}, {"$set": {"user_id": u["id"], "platform": platform, "updated_at": iso(now())}}, upsert=True)
     return {"ok": True}
@@ -765,6 +1140,7 @@ async def list_community_messages(before: Optional[str] = None, u: dict = Depend
 
 @api.post("/community/messages", status_code=201)
 async def post_community_message(body: CommunityMessageIn, u: dict = Depends(current_user)):
+    await enforce_rate_limit("community-post", u["id"], 5, 60)
     message = re.sub(r"\s+", " ", body.message).strip()
     validate_text(message)
     since = iso(now() - timedelta(minutes=1))
@@ -778,6 +1154,7 @@ async def post_community_message(body: CommunityMessageIn, u: dict = Depends(cur
 
 @api.post("/community/messages/{message_id}/report")
 async def report_community_message(message_id: str, body: CommunityReportIn, u: dict = Depends(current_user)):
+    await enforce_rate_limit("community-report", u["id"], 20, 86400)
     row = await db.community_messages.find_one({"id": message_id, "hidden": {"$ne": True}}, {"_id": 0, "user_id": 1})
     if not row:
         raise HTTPException(404, "Mensagem não encontrada")
@@ -820,8 +1197,93 @@ def stripe_ready():
     stripe.api_key = key
 
 
+def stripe_field(value, field: str, default=None):
+    if isinstance(value, dict):
+        return value.get(field, default)
+    return getattr(value, field, default)
+
+
+def subscription_id_from_invoice(invoice) -> Optional[str]:
+    direct = stripe_field(invoice, "subscription")
+    if isinstance(direct, str):
+        return direct
+    direct_id = stripe_field(direct, "id")
+    if isinstance(direct_id, str):
+        return direct_id
+    parent = stripe_field(invoice, "parent", {}) or {}
+    details = stripe_field(parent, "subscription_details", {}) or {}
+    nested = stripe_field(details, "subscription")
+    if isinstance(nested, str):
+        return nested
+    nested_id = stripe_field(nested, "id")
+    if isinstance(nested_id, str):
+        return nested_id
+    lines = stripe_field(stripe_field(invoice, "lines", {}), "data", []) or []
+    for line in lines:
+        line_parent = stripe_field(line, "parent", {}) or {}
+        item_details = stripe_field(line_parent, "subscription_item_details", {}) or {}
+        nested = stripe_field(item_details, "subscription")
+        if isinstance(nested, str):
+            return nested
+    return None
+
+
+async def sync_subscription_state(subscription, payment_status: Optional[str] = None) -> bool:
+    subscription_id = stripe_field(subscription, "id")
+    if not subscription_id:
+        return False
+    tx = await db.payment_transactions.find_one({"subscription_id": subscription_id}, {"_id": 0})
+    if not tx or not tx.get("user_id"):
+        logger.warning("Stripe subscription %s has no linked local transaction", subscription_id)
+        return False
+    status = stripe_field(subscription, "status", "unknown")
+    items = stripe_field(stripe_field(subscription, "items", {}), "data", []) or []
+    # Stripe API versions from 2025-03-31 move billing periods to subscription items.
+    ends = [stripe_field(item, "current_period_end") for item in items]
+    ends = [value for value in ends if isinstance(value, (int, float))]
+    period_end = max(ends) if ends else stripe_field(subscription, "current_period_end")
+    period_expiry = iso(datetime.fromtimestamp(period_end, timezone.utc)) if isinstance(period_end, (int, float)) else None
+    tx_update = {"subscription_status": status}
+    tx_update["cancel_at_period_end"] = bool(stripe_field(subscription, "cancel_at_period_end", False))
+    if period_expiry:
+        tx_update["current_period_end"] = period_expiry
+    cancel_at = stripe_field(subscription, "cancel_at")
+    if isinstance(cancel_at, (int, float)):
+        tx_update["cancel_at"] = iso(datetime.fromtimestamp(cancel_at, timezone.utc))
+    if payment_status:
+        tx_update["payment_status"] = payment_status
+    elif status == "past_due":
+        tx_update["payment_status"] = "atrasado"
+    await db.payment_transactions.update_one({"session_id": tx["session_id"]}, {"$set": tx_update})
+
+    # Recompute the account's entitlement from all its unexpired subscriptions;
+    # an old/cancelled subscription must not revoke another active plan.
+    active = await db.payment_transactions.find({
+        "user_id": tx["user_id"],
+        "subscription_status": {"$in": ["active", "trialing", "past_due"]},
+        "current_period_end": {"$gt": iso(now())},
+    }, {"_id": 0, "plan_id": 1, "current_period_end": 1}).to_list(20)
+    if active:
+        entitlement = max(active, key=lambda item: item.get("current_period_end", ""))
+        update = {"plan": entitlement["plan_id"], "plan_expires_at": entitlement["current_period_end"]}
+        changed = await db.users.update_one({"id": tx["user_id"], "$or": [
+            {"plan": {"$ne": update["plan"]}}, {"plan_expires_at": {"$ne": update["plan_expires_at"]}},
+        ]}, {"$set": update})
+        if changed.modified_count:
+            await notify(tx["user_id"], "Assinatura atualizada", "O período do seu plano foi sincronizado com o pagamento.", "success")
+    else:
+        changed = await db.users.update_one({"id": tx["user_id"], "plan": {"$ne": "gratuito"}},
+                                            {"$set": {"plan": "gratuito", "plan_expires_at": None}})
+        if changed.modified_count:
+            await notify(tx["user_id"], "Plano atualizado", "Sua assinatura terminou. Você pode conferir os planos disponíveis no app.", "info")
+    return True
+
+
 @api.post("/payments/checkout")
 async def checkout(body: CheckoutIn, request: Request, u: dict = Depends(current_user)):
+    await enforce_rate_limit("payment-checkout", u["id"], 3, 3600)
+    if is_premium(u):
+        raise HTTPException(409, "Você já tem uma assinatura ativa.")
     plan = await db.plans.find_one({"id": body.plan_id, "active": True}, {"_id": 0})
     if not plan or plan["price_cents"] <= 0:
         raise HTTPException(404, "Plano inválido")
@@ -851,18 +1313,19 @@ async def activate_if_paid(session_id: str) -> str:
     tx = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
     if not tx:
         raise HTTPException(404, "Transação não encontrada")
-    if tx["payment_status"] == "pago":
-        return "pago"
     stripe_ready()
     s = await asyncio.to_thread(stripe.checkout.Session.retrieve, session_id)
     if s.payment_status == "paid" and s.status == "complete":
-        plan = await db.plans.find_one({"id": tx["plan_id"]}, {"_id": 0})
-        days = 366 if plan and plan["interval"] == "year" else 31
-        r = await db.payment_transactions.update_one({"session_id": session_id, "payment_status": {"$ne": "pago"}},
-                                                     {"$set": {"payment_status": "pago", "subscription_id": s.subscription, "paid_at": iso(now())}})
-        if r.modified_count:
-            await db.users.update_one({"id": tx["user_id"]}, {"$set": {"plan": tx["plan_id"], "plan_expires_at": iso(now() + timedelta(days=days))}})
-            await notify(tx["user_id"], "Assinatura ativada", f"Seu plano {plan['name'] if plan else ''} está ativo. Obrigado!", "success")
+        subscription_id = stripe_field(s, "subscription")
+        if not isinstance(subscription_id, str):
+            subscription_id = stripe_field(subscription_id, "id")
+        await db.payment_transactions.update_one(
+            {"session_id": session_id},
+            {"$set": {"payment_status": "pago", "subscription_id": subscription_id, "paid_at": iso(now())}},
+        )
+        if subscription_id:
+            subscription = await asyncio.to_thread(stripe.Subscription.retrieve, subscription_id)
+            await sync_subscription_state(subscription, "pago")
         return "pago"
     if s.status == "expired":
         await db.payment_transactions.update_one({"session_id": session_id}, {"$set": {"payment_status": "expirado"}})
@@ -876,6 +1339,44 @@ async def payment_status(session_id: str, u: dict = Depends(current_user)):
     if not tx:
         raise HTTPException(404, "Transação não encontrada")
     return {"status": await activate_if_paid(session_id)}
+
+
+@api.get("/payments/subscription")
+async def current_subscription(u: dict = Depends(current_user)):
+    rows = await db.payment_transactions.find({
+        "user_id": u["id"], "subscription_id": {"$exists": True},
+        "subscription_status": {"$in": ["active", "trialing", "past_due"]},
+        "current_period_end": {"$gt": iso(now())},
+    }, {"_id": 0, "plan_id": 1, "current_period_end": 1, "cancel_at_period_end": 1}).sort("current_period_end", -1).to_list(10)
+    if not rows:
+        return {"active": False, "cancel_at_period_end": False, "expires_at": None}
+    row = rows[0]
+    return {"active": True, "plan_id": row.get("plan_id"), "expires_at": row.get("current_period_end"),
+            "cancel_at_period_end": bool(row.get("cancel_at_period_end", False))}
+
+
+@api.post("/payments/cancel")
+async def cancel_subscription(u: dict = Depends(current_user)):
+    await enforce_rate_limit("payment-cancel", u["id"], 3, 3600)
+    rows = await db.payment_transactions.find({
+        "user_id": u["id"], "subscription_id": {"$exists": True},
+        "subscription_status": {"$in": ["active", "trialing", "past_due"]},
+        "current_period_end": {"$gt": iso(now())},
+    }, {"_id": 0, "subscription_id": 1, "current_period_end": 1, "cancel_at_period_end": 1}).sort("current_period_end", -1).to_list(10)
+    if not rows:
+        raise HTTPException(404, "Não encontramos uma assinatura ativa para cancelar.")
+    tx = rows[0]
+    if tx.get("cancel_at_period_end"):
+        return {"cancel_at_period_end": True, "expires_at": tx["current_period_end"]}
+    stripe_ready()
+    try:
+        subscription = await asyncio.to_thread(stripe.Subscription.modify, tx["subscription_id"], cancel_at_period_end=True)
+    except stripe.error.StripeError as exc:
+        logger.error("Stripe cancellation failed: %s", exc)
+        raise HTTPException(502, "Não foi possível agendar o cancelamento. Tente novamente mais tarde.")
+    await sync_subscription_state(subscription)
+    await notify(u["id"], "Cancelamento agendado", "Sua assinatura ficará ativa até o fim do período já pago e não será renovada.", "info")
+    return {"cancel_at_period_end": True, "expires_at": tx["current_period_end"]}
 
 
 @api.get("/payments/return", response_class=HTMLResponse)
@@ -898,8 +1399,31 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None, 
         event = stripe.Webhook.construct_event(await request.body(), stripe_signature, secret)
     except Exception:
         raise HTTPException(400, "Assinatura inválida")
-    if event["type"] == "checkout.session.completed":
-        await activate_if_paid(event["data"]["object"]["id"])
+    event_type = event["type"]
+    data = event["data"]["object"]
+    if event_type == "checkout.session.completed":
+        await activate_if_paid(data["id"])
+    elif event_type in ("customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted",
+                        "customer.subscription.paused", "customer.subscription.resumed"):
+        await sync_subscription_state(data)
+    elif event_type == "invoice.paid":
+        subscription_id = subscription_id_from_invoice(data)
+        if subscription_id:
+            stripe_ready()
+            subscription = await asyncio.to_thread(stripe.Subscription.retrieve, subscription_id)
+            await sync_subscription_state(subscription, "pago")
+    elif event_type == "invoice.payment_failed":
+        subscription_id = subscription_id_from_invoice(data)
+        if subscription_id:
+            tx = await db.payment_transactions.find_one({"subscription_id": subscription_id}, {"_id": 0})
+            if not tx:
+                raise HTTPException(404, "Assinatura não vinculada a uma transação local")
+            changed = await db.payment_transactions.update_one(
+                {"subscription_id": subscription_id, "payment_status": {"$ne": "atrasado"}},
+                {"$set": {"payment_status": "atrasado", "payment_failed_at": iso(now()), "failed_invoice_id": data.get("id")}},
+            )
+            if changed.modified_count and tx.get("user_id"):
+                await notify(tx["user_id"], "Pagamento pendente", "Não conseguimos confirmar a renovação do plano. Atualize o pagamento na Stripe para manter o Premium.", "warning")
     return {"received": True}
 
 
@@ -943,7 +1467,7 @@ async def moderate(aid: str, body: ModerateIn, admin: dict = Depends(admin_user)
 
 @api.get("/admin/community/messages")
 async def admin_community_messages(_: dict = Depends(admin_user)):
-    rows = await db.community_messages.find({"moderation_decision": {"$exists": False},
+    rows = await db.community_messages.find({
                                             "$or": [{"reports": {"$gt": 0}}, {"hidden": True}]},
                                             {"_id": 0, "reporter_ids": 0}).sort("created_at", -1).to_list(300)
     return rows
@@ -1050,7 +1574,14 @@ async def admin_feedback(_: dict = Depends(admin_user)):
 
 
 app.include_router(api)
-app.add_middleware(CORSMiddleware, allow_credentials=True, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+cors_origins = [origin.strip() for origin in os.environ.get(
+    "CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000,http://localhost:8081,http://127.0.0.1:8081"
+).split(",") if origin.strip()]
+# The API uses Bearer authorization headers, not cookies, so credentialed CORS
+# is unnecessary. Set CORS_ORIGINS to the exact HTTPS web-app origins in production.
+app.add_middleware(CORSMiddleware, allow_credentials=False, allow_origins=cors_origins,
+                   allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+                   allow_headers=["Authorization", "Content-Type"])
 
 
 async def seed():
@@ -1068,13 +1599,15 @@ async def seed():
 
 @app.on_event("startup")
 async def startup():
-    app.state.index_task = asyncio.create_task(ensure_indexes())
+    # Build unique/TTL indexes before accepting requests that depend on them.
+    await ensure_indexes()
     await seed()
+    app.state.push_worker_task = asyncio.create_task(push_worker())
 
 
 @app.on_event("shutdown")
 async def shutdown():
-    app.state.index_task.cancel()
+    app.state.push_worker_task.cancel()
     with suppress(asyncio.CancelledError):
-        await app.state.index_task
+        await app.state.push_worker_task
     client.close()

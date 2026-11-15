@@ -5,6 +5,7 @@ import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { api, errMsg } from "@/src/api";
+import { useAuth } from "@/src/auth";
 import { CATEGORIES, F, R, S } from "@/src/constants";
 import { Banner, Btn, Card, Field, Icon, ScreenHeader, Txt, useToast } from "@/src/components/ui";
 import { FAILURE_TEXT, getCurrentCoords, LocFailure, useLocationPermission } from "@/src/location";
@@ -18,6 +19,7 @@ export default function Report() {
   const router = useRouter();
   const toast = useToast();
   const online = useOnline();
+  const { user } = useAuth();
   const perm = useLocationPermission();
   const params = useLocalSearchParams<{ lat?: string; lng?: string }>();
   const hasMapPoint = !!params.lat && !!params.lng;
@@ -36,6 +38,11 @@ export default function Report() {
     setBusy(true);
     let lat: number, lng: number;
     if (source === "gps") {
+      if (!user?.location_consent) {
+        setGpsErr("consent_required");
+        setBusy(false);
+        return;
+      }
       if (!perm.granted && perm.canAskAgain) await perm.request();
       const r = await getCurrentCoords();
       if (!r.ok) {

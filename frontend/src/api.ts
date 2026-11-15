@@ -19,7 +19,7 @@ export function setUnauthorizedHandler(fn: () => void) {
   onUnauthorized = fn;
 }
 
-export async function api<T = any>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
+export async function api<T = any>(path: string, init: { method?: string; body?: unknown; skipUnauthorizedHandler?: boolean } = {}): Promise<T> {
   const token = await storage.secureGet(TOKEN_KEY, null as string | null);
   let res: Response;
   try {
@@ -36,7 +36,7 @@ export async function api<T = any>(path: string, init: { method?: string; body?:
   }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    if (res.status === 401 && token) onUnauthorized?.();
+    if (res.status === 401 && token && !init.skipUnauthorizedHandler) onUnauthorized?.();
     let msg = "Algo deu errado. Tente novamente.";
     if (typeof data?.detail === "string") msg = data.detail;
     else if (Array.isArray(data?.detail)) msg = "Verifique os dados informados.";
