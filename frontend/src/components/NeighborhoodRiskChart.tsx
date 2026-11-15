@@ -4,6 +4,7 @@ import { Linking, Pressable, View } from "react-native";
 import { catOf, F, R, S } from "@/src/constants";
 import { Icon, Txt } from "@/src/components/ui";
 import { makeStyles, useTheme } from "@/src/theme";
+import { sspVehicleStats2025 } from "@/src/data/sspVehicleStats2025";
 
 export type NeighborhoodStats = { source: string; hours: number; neighborhoods: { neighborhood: string; total: number; categories: Record<string, number> }[] };
 
@@ -12,6 +13,8 @@ export function NeighborhoodRiskChart({ data }: { data: NeighborhoodStats | null
   const { colors } = useTheme();
   const rows = data?.neighborhoods ?? [];
   const peak = Math.max(1, ...rows.map((row) => row.total));
+  const officialRows = sspVehicleStats2025.neighborhoods.slice(0, 8);
+  const officialPeak = Math.max(1, ...officialRows.map((row) => row.roubo + row.furto));
   return (
     <Animated.View entering={FadeInUp.duration(380)} style={s.card} testID="neighborhood-risk-chart">
       <View style={s.header}>
@@ -25,6 +28,29 @@ export function NeighborhoodRiskChart({ data }: { data: NeighborhoodStats | null
         </Animated.View>;
       }) : <Txt style={s.empty}>Ainda não há relatos aprovados com bairro informado para este período.</Txt>}
       <Txt style={s.source}>Fonte: {data?.source ?? "relatos aprovados da comunidade"}. Indicador colaborativo; não representa estatística oficial nem taxa de criminalidade.</Txt>
+      <View style={s.officialData} testID="official-vehicle-statistics">
+        <View style={s.header}>
+          <View style={{ flex: 1 }}><Txt style={s.title}>Salvador · dados oficiais de 2025</Txt><Txt variant="small">Roubo e furto de veículos por bairro</Txt></View>
+          <Icon name="shield-checkmark" size={22} color={colors.success} />
+        </View>
+        <View style={s.legend}>
+          <View style={s.category}><Icon name="car" size={13} color={colors.error} /><Txt style={s.categoryText}>Roubo</Txt></View>
+          <View style={s.category}><Icon name="key" size={13} color={colors.warning} /><Txt style={s.categoryText}>Furto</Txt></View>
+        </View>
+        {officialRows.map((row, index) => {
+          const total = row.roubo + row.furto;
+          const width = `${Math.max(7, (total / officialPeak) * 100)}%` as `${number}%`;
+          return <Animated.View key={row.neighborhood} entering={FadeInRight.delay(index * 45).duration(320)} layout={LinearTransition.duration(380)} style={s.row} testID={`official-neighborhood-row-${index}`}>
+            <View style={{ flex: 1, gap: 5 }}>
+              <View style={s.labelLine}><Txt style={s.name} numberOfLines={1}>{row.neighborhood}</Txt><Txt style={s.value}>{total}</Txt></View>
+              <View style={s.track}><Animated.View layout={LinearTransition.duration(420)} style={[s.bar, { width }]} /></View>
+              <View style={s.categoryList}><Txt style={s.categoryText}>Roubo: {row.roubo}</Txt><Txt style={s.categoryText}>Furto: {row.furto}</Txt></View>
+            </View>
+          </Animated.View>;
+        })}
+        <Txt style={s.source}>Fonte: SSP-BA, microdados de janeiro a dezembro de 2025; atualização publicada em 18/03/2026. A contagem cobre apenas registros de roubo/furto de veículos e não mede o risco geral do bairro.</Txt>
+        <Pressable accessibilityRole="link" onPress={() => Linking.openURL(sspVehicleStats2025.sourceUrl)} style={s.sourceLink}><Icon name="open-outline" size={15} color={colors.brand} /><Txt style={s.linkText}>Abrir microdados de veículos da SSP-BA</Txt></Pressable>
+      </View>
       <View style={s.officialSources}>
         <Txt style={s.officialTitle}>Dados oficiais da Bahia</Txt>
         <Pressable accessibilityRole="link" onPress={() => Linking.openURL("https://www.ba.gov.br/ssp/informacoes-criminais-0")} style={s.sourceLink}><Icon name="open-outline" size={15} color={colors.brand} /><Txt style={s.linkText}>SSP-BA: estatísticas criminais e Anuário</Txt></Pressable>
@@ -50,6 +76,8 @@ const useStyles = makeStyles((c) => ({
   categoryText: { fontFamily: F.medium, fontSize: 10, color: c.onSurfaceSecondary },
   source: { fontFamily: F.medium, fontSize: 11, lineHeight: 16, color: c.muted },
   officialSources: { gap: S.xs, paddingTop: S.sm, borderTopWidth: 1, borderTopColor: c.border },
+  officialData: { gap: S.sm, paddingTop: S.md, borderTopWidth: 1, borderTopColor: c.border },
+  legend: { flexDirection: "row", gap: S.md },
   officialTitle: { fontFamily: F.bold, fontSize: 12, color: c.onSurface },
   sourceLink: { minHeight: 36, flexDirection: "row", alignItems: "center", gap: S.sm },
   linkText: { fontFamily: F.semibold, fontSize: 12, color: c.brand, textDecorationLine: "underline" },

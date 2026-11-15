@@ -29,7 +29,7 @@
 
 - `python -m compileall -q backend`: passou.
 - JSON de `frontend/app.json`: passou na validação.
-- Testes de integração e compilação TypeScript/nativa não executados nesta cópia: o ZIP não inclui dependências instaladas, MongoDB/API configurados ou ambiente de build Expo. A validação em GPS real, microfone e dispositivos de outras cidades requer builds e aparelhos com permissões autorizadas.
+- Testes de integração/nativos não executados nesta cópia: a validação com MongoDB/API, GPS real, microfone e dispositivos requer serviços configurados e aparelhos com permissões autorizadas.
 
 ## Configuração externa
 
@@ -39,3 +39,14 @@
 - Não existe integração oficial de alertas com autoridades cadastradas.
 - Google Maps SDK continua necessário para os builds de produção, conforme a configuração original do projeto. Stripe só é usada se alguém escolher um plano Premium existente.
 - O `backend/requirements.txt` foi reduzido às dependências importadas pelo backend e pelos testes. Dependências privadas da plataforma Emergent, que não eram usadas no código, foram removidas. A chave `EMERGENT_EMAIL_KEY` e `EMAIL_FROM_NAME` são opcionais para iniciar localmente; sem chave, o envio de e-mail retorna indisponível.
+
+## Fórum, estatísticas por bairro e navegação
+
+- A Comunidade SOS agora organiza publicações por assunto (apoio, trajetos, riscos e geral). Publicações denunciadas ou ocultadas automaticamente entram na fila de revisão em **Painel administrativo > Fórum**.
+- O formulário de alerta aceita bairro opcional. O gráfico agrega apenas relatos aprovados que informaram bairro e exibe separadamente as categorias (assalto, roubo de veículo, via perigosa, acidente, alagamento, falta de iluminação e outros). É um indicador da comunidade, não uma estatística policial oficial; bairro digitado não é validado por geocodificação.
+- Para Salvador, o gráfico oferece atalhos oficiais da SSP-BA/SEI. A SSP publica microdados de mortes violentas e veículos com campo de bairro, mas isso não cobre toda categoria de risco do app; os dados policiais também têm recortes e periodicidades próprios. Os valores oficiais não são misturados ao contador colaborativo.
+- O gráfico agora inclui, em painel separado, a soma oficial de roubo e furto de veículos por bairro de Salvador no ano de 2025. A agregação usa somente bairro, natureza e quantidade dos microdados SSP-BA; não classifica bairros como universalmente perigosos nem mistura esses dados com os relatos recentes da comunidade. Fonte atualizada pela SSP-BA em 18/03/2026.
+- O mapa acompanha a posição em navegação com câmera inclinada, mapa escuro, instrução de manobra, rota, cartão de distância/tempo e marcador próprio de carro ou pessoa.
+- As instruções de manobra avançam conforme o GPS se aproxima do próximo ponto da rota. A navegação a pé usa `OSRM_FOOT_BASE_URL`, com `https://routing.openstreetmap.de/routed-foot` como padrão e atribuição OpenStreetMap/FOSSGIS no app. Esse serviço público recebe origem, destino e trilha GPS para calcular rotas; para produção, use uma instância própria ou provedor contratado.
+- Push está implementado no cliente e no backend, mas a configuração deste projeto ainda não contém um `EAS projectId`. Para ativar em Android/iPhone, é necessário vincular o app ao EAS e gerar uma build compatível; esse identificador e as credenciais do projeto não foram inventados nem enviados.
+- Esta restauração e os complementos desta revisão ainda não passaram por validação integrada em MongoDB, EAS ou aparelho físico.

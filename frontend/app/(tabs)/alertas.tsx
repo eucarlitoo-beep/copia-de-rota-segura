@@ -8,6 +8,7 @@ import { api, errMsg } from "@/src/api";
 import { CATEGORIES, catOf, F, R, S } from "@/src/constants";
 import { Btn, Empty, Icon, OfflineBanner, Sheet, Txt, useToast } from "@/src/components/ui";
 import { RiskChart } from "@/src/components/RiskChart";
+import { NeighborhoodRiskChart, NeighborhoodStats } from "@/src/components/NeighborhoodRiskChart";
 import { usesNativeTabs } from "@/src/navigation";
 import { useOnline } from "@/src/net";
 import { makeStyles, useTheme } from "@/src/theme";
@@ -32,6 +33,7 @@ export default function Alertas() {
   const toast = useToast();
   const [cat, setCat] = useState<string | null>(null);
   const [items, setItems] = useState<Alert[]>([]);
+  const [neighborhoodStats, setNeighborhoodStats] = useState<NeighborhoodStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
@@ -42,6 +44,7 @@ export default function Alertas() {
     setError("");
     try {
       setItems(await api<Alert[]>("/alerts"));
+      setNeighborhoodStats(await api<NeighborhoodStats>("/alerts/stats/neighborhoods?hours=720").catch(() => null));
     } catch (e) {
       setError(errMsg(e));
     }
@@ -119,7 +122,7 @@ export default function Alertas() {
           keyExtractor={(a) => a.id}
           contentContainerStyle={{ padding: S.lg, gap: S.md, paddingBottom: bottomChrome + S.xl }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={colors.brand} />}
-          ListHeaderComponent={<View style={{ gap: S.md }}><Txt variant="small">Relatos moderados das últimas 72h. Não identificamos pessoas — apenas situações de risco.</Txt><RiskChart alerts={items} /></View>}
+          ListHeaderComponent={<View style={{ gap: S.md }}><Txt variant="small">Relatos moderados das últimas 72h. Não identificamos pessoas — apenas situações de risco.</Txt><RiskChart alerts={items} /><NeighborhoodRiskChart data={neighborhoodStats} /></View>}
           ListEmptyComponent={<Empty testID="alerts-empty" icon="sunny" title="Nenhuma ocorrência reportada" text="Nenhum alerta aprovado nesta categoria nas últimas 72 horas." />}
           renderItem={({ item, index }) => {
             const c = catOf(item.category);

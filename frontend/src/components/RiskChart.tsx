@@ -1,4 +1,4 @@
-import Animated, { FadeInRight, FadeInUp, LinearTransition } from "react-native-reanimated";
+import Animated, { FadeInRight, FadeInUp, LinearTransition, ZoomIn } from "react-native-reanimated";
 import { View } from "react-native";
 
 import { CATEGORIES, F, R, S } from "@/src/constants";
@@ -37,9 +37,9 @@ export function RiskChart({ alerts }: { alerts: RiskDatum[] }) {
           const width = `${item.count === 0 ? 0 : Math.max(7, (item.count / peak) * 100)}%` as `${number}%`;
           return (
             <Animated.View key={item.key} entering={FadeInRight.delay(index * 55).duration(360)} layout={LinearTransition.duration(420)} style={s.row} testID={`risk-chart-row-${item.key}`}>
-              <View style={[s.icon, { backgroundColor: colors[item.color] as string }]}>
+              <Animated.View entering={ZoomIn.delay(index * 55).duration(380)} style={[s.icon, { backgroundColor: colors[item.color] as string }]}>
                 <Icon name={item.icon as any} size={15} color={colors.onError} />
-              </View>
+              </Animated.View>
               <View style={s.details}>
                 <View style={s.labelLine}>
                   <Txt style={s.label} numberOfLines={1}>{item.label}</Txt>
