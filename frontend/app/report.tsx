@@ -5,7 +5,6 @@ import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { api, errMsg } from "@/src/api";
-import { useAuth } from "@/src/auth";
 import { CATEGORIES, F, R, S } from "@/src/constants";
 import { Banner, Btn, Card, Field, Icon, ScreenHeader, Txt, useToast } from "@/src/components/ui";
 import { FAILURE_TEXT, getCurrentCoords, LocFailure, useLocationPermission } from "@/src/location";
@@ -19,14 +18,12 @@ export default function Report() {
   const router = useRouter();
   const toast = useToast();
   const online = useOnline();
-  const { user } = useAuth();
   const perm = useLocationPermission();
   const params = useLocalSearchParams<{ lat?: string; lng?: string }>();
   const hasMapPoint = !!params.lat && !!params.lng;
   const [source, setSource] = useState<"gps" | "map">(hasMapPoint ? "map" : "gps");
   const [category, setCategory] = useState<string | null>(null);
   const [description, setDescription] = useState("");
-  const [neighborhood, setNeighborhood] = useState("");
   const [error, setError] = useState("");
   const [gpsErr, setGpsErr] = useState<LocFailure | null>(null);
   const [busy, setBusy] = useState(false);
@@ -38,11 +35,6 @@ export default function Report() {
     setBusy(true);
     let lat: number, lng: number;
     if (source === "gps") {
-      if (!user?.location_consent) {
-        setGpsErr("consent_required");
-        setBusy(false);
-        return;
-      }
       if (!perm.granted && perm.canAskAgain) await perm.request();
       const r = await getCurrentCoords();
       if (!r.ok) {
@@ -57,7 +49,7 @@ export default function Report() {
       lng = Number(params.lng);
     }
     try {
-      await api("/alerts", { method: "POST", body: { category, description: description.trim(), neighborhood: neighborhood.trim() || undefined, lat, lng } });
+      await api("/alerts", { method: "POST", body: { category, description: description.trim(), lat, lng } });
       toast("Relato enviado para moderação. Avisaremos quando for analisado.", "success");
       router.back();
     } catch (e) {
@@ -102,8 +94,6 @@ export default function Report() {
           multiline
           placeholder="Ex.: Trecho escuro com relatos de abordagem perto do viaduto."
         />
-        <Field testID="report-neighborhood-input" label="Bairro (opcional)" value={neighborhood} onChangeText={(value) => setNeighborhood(value.slice(0, 80))} placeholder="Ex.: Centro" />
-        <Txt variant="small">O bairro informado ajuda a montar estatísticas colaborativas. Não é uma estatística oficial de segurança pública.</Txt>
         <View>
           <Txt variant="label">Local do relato</Txt>
           <View style={s.src}>

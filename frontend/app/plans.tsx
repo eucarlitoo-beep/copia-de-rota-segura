@@ -6,13 +6,12 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api, errMsg } from "@/src/api";
 import { useAuth } from "@/src/auth";
 import { brl, F, R, S } from "@/src/constants";
-import { Btn, Icon, ScreenHeader, Sheet, Txt, useToast } from "@/src/components/ui";
+import { Btn, Icon, ScreenHeader, Txt, useToast } from "@/src/components/ui";
 import { makeStyles, useTheme } from "@/src/theme";
 import { fmtDate } from "@/src/time";
 import { storage } from "@/src/utils/storage";
 
 type Plan = { id: string; name: string; price_cents: number; interval: "month" | "year"; features: string[] };
-type Subscription = { active: boolean; plan_id?: string; expires_at: string | null; cancel_at_period_end: boolean };
 const PENDING_KEY = "pending_checkout";
 
 export default function Plans() {
@@ -24,13 +23,6 @@ export default function Plans() {
   const [plans, setPlans] = useState<Plan[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
-  const [subscription, setSubscription] = useState<Subscription | null>(null);
-  const [cancelOpen, setCancelOpen] = useState(false);
-  const [cancelBusy, setCancelBusy] = useState(false);
-
-  const loadSubscription = useCallback(async () => {
-    try { setSubscription(await api<Subscription>("/payments/subscription")); } catch { setSubscription(null); }
-  }, []);
 
   useEffect(() => {
     api<Plan[]>("/plans").then(setPlans).catch((e) => { setPlans([]); toast(errMsg(e), "error"); });
@@ -46,7 +38,6 @@ export default function Plans() {
         if (r.status === "pago") {
           await storage.removeItem(PENDING_KEY);
           await refresh();
-          await loadSubscription();
           toast("Assinatura ativada! Obrigado.", "success");
           break;
         }
@@ -60,15 +51,13 @@ export default function Plans() {
       await new Promise((res) => setTimeout(res, 2000));
     }
     setChecking(false);
-  }, [refresh, toast, loadSubscription]);
+  }, [refresh, toast]);
 
   useEffect(() => {
     check();
     const sub = AppState.addEventListener("change", (st) => st === "active" && check());
     return () => sub.remove();
   }, [check]);
-
-  useEffect(() => { loadSubscription(); }, [loadSubscription]);
 
   const subscribe = async (p: Plan) => {
     setBusy(p.id);
@@ -83,21 +72,6 @@ export default function Plans() {
     setBusy(null);
   };
 
-  const cancelSubscription = async () => {
-    setCancelBusy(true);
-    try {
-      const result = await api<{ cancel_at_period_end: boolean; expires_at: string }>("/payments/cancel", { method: "POST" });
-      setSubscription({ active: true, expires_at: result.expires_at, cancel_at_period_end: result.cancel_at_period_end });
-      setCancelOpen(false);
-      await refresh();
-      toast("Renovação cancelada. Seu Premium continua ativo até o fim do período pago.", "success");
-    } catch (e) {
-      toast(errMsg(e), "error");
-    } finally {
-      setCancelBusy(false);
-    }
-  };
-
   return (
     <View style={s.root}>
       <ScreenHeader title="Assinatura" />
@@ -107,9 +81,6 @@ export default function Plans() {
           <View style={{ flex: 1 }}>
             <Txt style={s.curTitle}>{user?.is_premium ? "Você é Premium" : "Você está no plano gratuito"}</Txt>
             {user?.plan_expires_at ? <Txt style={s.curSub}>Válido até {fmtDate(user.plan_expires_at)}</Txt> : <Txt style={s.curSub}>O SOS é sempre gratuito para todos.</Txt>}
-            {user?.is_premium && subscription?.active ? subscription.cancel_at_period_end ? (
-              <Txt style={s.curSub}>Renovação cancelada. Acesso até {fmtDate(subscription.expires_at ?? user.plan_expires_at ?? "")}</Txt>
-            ) : <Btn testID="plan-cancel-subscription" small label="Cancelar renovação" variant="outline" onPress={() => setCancelOpen(true)} style={{ marginTop: S.sm }} /> : null}
           </View>
         </View>
         <Txt testID="plans-free-note" variant="small" style={{ textAlign: "center" }}>O plano gratuito funciona sem informar cartão. As assinaturas Premium são opcionais.</Txt>
@@ -138,12 +109,6 @@ export default function Plans() {
           Pagamento seguro processado pela Stripe. Não armazenamos dados do seu cartão. Cancele quando quiser.
         </Txt>
       </ScrollView>
-      <Sheet visible={cancelOpen} onClose={() => setCancelOpen(false)} testID="plan-cancel-sheet">
-        <Txt variant="h2">Cancelar renovação?</Txt>
-        <Txt style={{ marginVertical: S.md }}>Seu plano Premium continuará ativo até {fmtDate(subscription?.expires_at ?? user?.plan_expires_at ?? "")}. Depois dessa data, ele não será renovado e sua conta voltará ao plano gratuito.</Txt>
-        <Btn testID="plan-cancel-confirm" label="Confirmar cancelamento" variant="danger" onPress={cancelSubscription} loading={cancelBusy} />
-        <Btn testID="plan-cancel-dismiss" label="Manter assinatura" variant="ghost" onPress={() => setCancelOpen(false)} style={{ marginTop: S.sm }} />
-      </Sheet>
     </View>
   );
 }

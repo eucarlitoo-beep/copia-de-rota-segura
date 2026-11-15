@@ -3381,13 +3381,6 @@ expo-system-ui@58.0.6:
     "@react-native/normalize-colors" "0.88.0"
     debug "^4.3.2"
 
-expo-task-manager@~58.0.14:
-  version "58.0.14"
-  resolved "https://registry.yarnpkg.com/expo-task-manager/-/expo-task-manager-58.0.14.tgz#7f062e77bd5e7a1a751d45c2d49e509912613065"
-  integrity sha512-a8GFlS0pcL7P7FFY9nukmeQz9gBpRFftXDEdA08NkWZDjVn2VNjdJw2nSbElEnLQCLYzKMkITJLbnixXqVoQdQ==
-  dependencies:
-    unimodules-app-loader "~58.0.2"
-
 expo-web-browser@58.0.6:
   version "58.0.6"
   resolved "https://registry.yarnpkg.com/expo-web-browser/-/expo-web-browser-58.0.6.tgz#40ef0cc6b52b9a3756f5a69ac87f72d3057a99f8"
@@ -6291,11 +6284,6 @@ unicorn-magic@^0.3.0:
   version "0.3.0"
   resolved "https://registry.yarnpkg.com/unicorn-magic/-/unicorn-magic-0.3.0.tgz#4efd45c85a69e0dd576d25532fbfa22aa5c8a104"
   integrity sha512-+QBBXBCvifc56fsbuxZQ6Sic3wqqc3WWaqxs58gvJrcOuN83HGTCwz3oS5phzU9LthRNE9VrJCFCLUgHeeFnfA==
-
-unimodules-app-loader@~58.0.2:
-  version "58.0.2"
-  resolved "https://registry.yarnpkg.com/unimodules-app-loader/-/unimodules-app-loader-58.0.2.tgz#c644971346f1c791098fa6d6ffd8940c30ed4279"
-  integrity sha512-d7vZN9/awIwPCqzfw1qR/geJEzv3ElW0VdwXFnPw29QZYoAZI0jqXGKPZVG1vQCfhEiWJtBX/nVm1XI8wshrDg==
 
 unpipe@~1.0.0:
   version "1.0.0"

@@ -10,9 +10,7 @@ import { Banner, Icon, Txt, useToast } from "@/src/components/ui";
 import { makeStyles, useTheme } from "@/src/theme";
 import { timeAgo } from "@/src/time";
 
-type Topic = "apoio" | "trajeto" | "risco" | "geral";
-const TOPICS: { key: Topic; label: string }[] = [{ key: "apoio", label: "Apoio" }, { key: "trajeto", label: "Rotas" }, { key: "risco", label: "Riscos" }, { key: "geral", label: "Geral" }];
-type Message = { id: string; author: string; message: string; topic: Topic; created_at: string; is_mine: boolean };
+type Message = { id: string; author: string; message: string; created_at: string; is_mine: boolean };
 
 export default function CommunityChat() {
   const s = useStyles();
@@ -22,8 +20,6 @@ export default function CommunityChat() {
   const toast = useToast();
   const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState("");
-  const [topic, setTopic] = useState<Topic>("geral");
-  const [filterTopic, setFilterTopic] = useState<Topic | null>(null);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
@@ -50,7 +46,7 @@ export default function CommunityChat() {
     if (message.length < 2 || sending) return;
     setSending(true);
     try {
-      const created = await api<Message>("/community/messages", { method: "POST", body: { message, topic } });
+      const created = await api<Message>("/community/messages", { method: "POST", body: { message } });
       setMessages((current) => [...current.filter((item) => item.id !== created.id), created].slice(-100));
       setDraft("");
       setError("");
@@ -70,17 +66,16 @@ export default function CommunityChat() {
     }
   };
 
-  const ordered = [...messages].reverse().filter((message) => !filterTopic || message.topic === filterTopic);
+  const ordered = [...messages].reverse();
 
   return (
     <KeyboardAvoidingView style={s.root} behavior={Platform.OS === "ios" ? "padding" : undefined}>
       <View style={[s.header, { paddingTop: insets.top + S.sm }]}>
         <Pressable accessibilityRole="button" accessibilityLabel="Voltar" onPress={() => router.back()} style={s.back}><Icon name="chevron-back" size={24} color={colors.onBrand} /></Pressable>
-        <View style={{ flex: 1 }}><Txt style={s.title}>Fórum da comunidade</Txt><Txt style={s.subtitle}>Apoio, rotas e riscos com moderação</Txt></View>
+        <View style={{ flex: 1 }}><Txt style={s.title}>Comunidade SOS</Txt><Txt style={s.subtitle}>Apoio colaborativo com atualização automática</Txt></View>
         <Icon name="people" size={24} color={colors.onBrand} />
       </View>
       <View style={s.safety}><Icon name="shield-checkmark" size={18} color={colors.success} /><Txt style={s.safetyText}>Não envie endereço, telefone, placas ou dados pessoais. Em emergência, ligue 190.</Txt></View>
-      <View style={s.topics}><Txt style={s.topicHint}>Ver:</Txt>{TOPICS.map((item) => <Pressable key={item.key} testID={`community-filter-${item.key}`} accessibilityState={{ selected: filterTopic === item.key }} onPress={() => setFilterTopic(filterTopic === item.key ? null : item.key)} style={[s.topicChip, filterTopic === item.key && s.topicChipOn]}><Txt style={[s.topicText, filterTopic === item.key && { color: colors.onBrand }]}>{item.label}</Txt></Pressable>)}</View>
       {error ? <View style={s.error}><Banner kind="error" text="Não foi possível atualizar o chat. Verifique a conexão." /><Pressable onPress={refresh}><Txt style={s.retry}>Tentar novamente</Txt></Pressable></View> : null}
       {loading ? <View style={s.loading}><ActivityIndicator color={colors.brand} /><Txt>Carregando conversa...</Txt></View> : (
         <FlatList
@@ -96,7 +91,6 @@ export default function CommunityChat() {
               <View style={[s.avatar, item.is_mine && s.mineAvatar]}><Txt style={[s.avatarText, item.is_mine && s.mineAvatarText]}>{item.author.slice(0, 1).toUpperCase()}</Txt></View>
               <View style={[s.bubble, item.is_mine && s.mineBubble]}>
                 {!item.is_mine ? <Txt style={s.author}>{item.author}</Txt> : null}
-                <Txt style={s.topicLabel}>{TOPICS.find((topicItem) => topicItem.key === item.topic)?.label ?? "Geral"}</Txt>
                 <Txt style={[s.message, item.is_mine && s.mineMessage]}>{item.message}</Txt>
                 <View style={s.meta}><Txt style={[s.time, item.is_mine && s.mineTime]}>{timeAgo(item.created_at)}</Txt>{!item.is_mine ? <Pressable accessibilityLabel="Denunciar mensagem" onPress={() => report(item)}><Txt style={s.report}>Denunciar</Txt></Pressable> : null}</View>
               </View>
@@ -105,8 +99,6 @@ export default function CommunityChat() {
         />
       )}
       <View style={[s.composer, { paddingBottom: Math.max(insets.bottom, S.sm) }]}>
-        <View style={s.composerInner}>
-          <View style={s.topicPicker}>{TOPICS.map((item) => <Pressable key={item.key} testID={`community-topic-${item.key}`} accessibilityState={{ selected: topic === item.key }} onPress={() => setTopic(item.key)} style={[s.topicChip, topic === item.key && s.topicChipOn]}><Txt style={[s.topicText, topic === item.key && { color: colors.onBrand }]}>{item.label}</Txt></Pressable>)}</View>
         <TextInput
           testID="community-message-input"
           value={draft}
@@ -123,7 +115,6 @@ export default function CommunityChat() {
         <Pressable testID="community-send-button" accessibilityRole="button" accessibilityLabel="Enviar mensagem" disabled={sending || draft.trim().length < 2} onPress={send} style={[s.send, (sending || draft.trim().length < 2) && s.sendDisabled]}>
           {sending ? <ActivityIndicator size="small" color={colors.onBrandPrimary} /> : <Icon name="send" size={20} color={colors.onBrandPrimary} />}
         </Pressable>
-        </View>
       </View>
     </KeyboardAvoidingView>
   );
@@ -137,11 +128,6 @@ const useStyles = makeStyles((c) => ({
   subtitle: { fontFamily: F.medium, fontSize: 12, color: c.brandTertiary },
   safety: { flexDirection: "row", alignItems: "center", gap: S.sm, backgroundColor: c.surface, paddingHorizontal: S.lg, paddingVertical: S.sm, borderBottomWidth: 1, borderBottomColor: c.border },
   safetyText: { flex: 1, fontFamily: F.medium, fontSize: 11, lineHeight: 16, color: c.onSurfaceSecondary },
-  topics: { flexDirection: "row", alignItems: "center", gap: S.xs, paddingHorizontal: S.md, paddingVertical: S.sm, backgroundColor: c.surface },
-  topicHint: { fontFamily: F.semibold, fontSize: 12, color: c.muted, marginRight: S.xs },
-  topicChip: { minHeight: 30, justifyContent: "center", paddingHorizontal: S.md, borderRadius: R.pill, backgroundColor: c.surfaceSecondary },
-  topicChipOn: { backgroundColor: c.brand },
-  topicText: { fontFamily: F.semibold, fontSize: 11, color: c.onSurface },
   error: { paddingHorizontal: S.md, paddingTop: S.sm },
   retry: { alignSelf: "flex-end", fontFamily: F.bold, color: c.brand, padding: S.sm },
   loading: { flex: 1, alignItems: "center", justifyContent: "center", gap: S.md },
@@ -162,10 +148,7 @@ const useStyles = makeStyles((c) => ({
   time: { fontFamily: F.medium, fontSize: 10, color: c.muted },
   mineTime: { color: c.brandTertiary },
   report: { fontFamily: F.semibold, fontSize: 10, color: c.error },
-  composer: { backgroundColor: c.surface, borderTopWidth: 1, borderTopColor: c.border },
-  composerInner: { flexDirection: "row", alignItems: "flex-end", gap: S.sm, padding: S.md, flexWrap: "wrap" },
-  topicPicker: { width: "100%", flexDirection: "row", gap: S.xs },
-  topicLabel: { alignSelf: "flex-start", fontFamily: F.bold, fontSize: 10, color: c.brand, backgroundColor: c.brandSoft, borderRadius: R.pill, paddingHorizontal: S.sm, paddingVertical: 2 },
+  composer: { flexDirection: "row", alignItems: "flex-end", gap: S.sm, padding: S.md, backgroundColor: c.surface, borderTopWidth: 1, borderTopColor: c.border },
   input: { flex: 1, maxHeight: 112, minHeight: 46, borderWidth: 1, borderColor: c.borderStrong, borderRadius: R.lg, paddingHorizontal: S.lg, paddingTop: 12, paddingBottom: 10, fontFamily: F.regular, fontSize: 14, color: c.onSurface, backgroundColor: c.surfaceSecondary },
   send: { width: 46, height: 46, borderRadius: 23, alignItems: "center", justifyContent: "center", backgroundColor: c.brandPrimary },
   sendDisabled: { opacity: 0.48 },

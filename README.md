@@ -28,14 +28,6 @@ cd backend && uvicorn server:app --host 0.0.0.0 --port 8001 --reload   # http://
 cd frontend && yarn expo start --port 3000                             # web preview + Expo Go QR
 ```
 
-For a local setup, copy `backend/.env.example` to `backend/.env` and
-`frontend/.env.example` to `frontend/.env`, then replace every `REPLACE_*`
-value. Set the frontend backend URL to the machine's LAN IP when using a phone.
-Never commit the real `.env` files. MongoDB, the mail integration, Stripe and
-EAS push credentials must each be configured separately for their features.
-Use `GET /health` for process liveness and `GET /health/ready` to confirm that
-MongoDB is reachable before accepting traffic.
-
 ## How the app reaches the backend
 
 Every backend route lives under `/api`, because the backend mounts one
@@ -58,32 +50,9 @@ dependencies come from `backend/requirements.txt`.
 
 - **Entry point.** `backend/server.py` creates `app`, creates
   `api_router = APIRouter(prefix="/api")`, registers routes **on the router**,
-  then calls `app.include_router(api_router)`. CORS defaults to local web
-  development origins; set `CORS_ORIGINS` to a comma-separated list of exact
-  web-app origins in production (for example, `https://app.example.com`).
-  Native apps do not use browser CORS. Never attach an API route to `app`
-  directly; it lands outside `/api` and the phone cannot reach it.
-- **Push notifications.** In-app notifications are persisted before push
-  delivery. The backend retries transient Expo Push API failures up to five
-  times; this confirms provider tickets, not that an operating system displayed
-  a notification. Set `EXPO_PUBLIC_EAS_PROJECT_ID` in the frontend build
-  environment and configure the matching Android/iOS push credentials with
-  Expo before expecting device delivery.
-- **City search.** Geocoding uses the Nominatim-compatible endpoint in
-  `GEOCODING_BASE_URL` (default: `https://nominatim.openstreetmap.org`) and
-  sends `GEOCODING_USER_AGENT` (default: `ROTA-SEGURA/1.0`). The backend
-  coordinates requests across workers to stay below one request per second.
-  Use a stable app identifier and an alternate compatible provider when
-  operating at higher volume or if the provider requests a change.
-- **Stripe subscriptions.** Configure `STRIPE_API_KEY` and
-  `STRIPE_WEBHOOK_SECRET`. The webhook endpoint must receive
-  `checkout.session.completed`, `customer.subscription.created/updated/deleted`,
-  `customer.subscription.paused/resumed`, `invoice.paid`, and
-  `invoice.payment_failed`. Subscription periods are read from Stripe's
-  subscription items, with a fallback for older API versions.
-- **Session sign-out.** `POST /api/auth/logout` revokes the current bearer
-  token on the server. Revocation records contain only a keyed digest and
-  expire automatically when the token expires; other devices remain signed in.
+  then calls `app.include_router(api_router)`. CORS is open. Never attach a
+  route to `app` directly; it lands outside `/api` and the phone cannot reach
+  it.
 - **The route pattern.** Copy the `status` route: a Pydantic model for the
   body and one for the response (`StatusCheckCreate`, `StatusCheck`), an
   `async def` handler decorated with

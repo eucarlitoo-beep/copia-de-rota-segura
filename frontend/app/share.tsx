@@ -1,6 +1,5 @@
 import * as Clipboard from "expo-clipboard";
 import * as Location from "expo-location";
-import { useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Pressable, ScrollView, Share, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -21,7 +20,6 @@ export default function ShareScreen() {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const toast = useToast();
-  const router = useRouter();
   const online = useOnline();
   const { user } = useAuth();
   const perm = useLocationPermission();
@@ -33,9 +31,8 @@ export default function ShareScreen() {
   const watch = useRef<Location.LocationSubscription | null>(null);
 
   useEffect(() => {
-    if (!user?.location_consent) return;
     api<ShareT | Record<string, never>>("/share/active").then((r) => ("id" in r ? setShare(r as ShareT) : null)).catch(() => {});
-  }, [user?.location_consent]);
+  }, []);
 
   const stopWatch = () => {
     watch.current?.remove();
@@ -52,7 +49,7 @@ export default function ShareScreen() {
           api(`/share/${sh.id}/location`, { method: "PUT", body: { lat: pos.coords.latitude, lng: pos.coords.longitude } })
             .then(() => setLastSent(new Date().toISOString()))
             .catch((e) => {
-              if (e.status === 410 || e.status === 403) {
+              if (e.status === 410) {
                 setShare(null);
                 stopWatch();
               }
@@ -65,24 +62,13 @@ export default function ShareScreen() {
   }, []);
 
   useEffect(() => {
-    if (!user?.location_consent) {
-      stopWatch();
-      setShare(null);
-      return stopWatch;
-    }
     if (share && perm.granted) startWatch(share);
     return stopWatch;
-  }, [share, perm.granted, user?.location_consent, startWatch]);
+  }, [share, perm.granted, startWatch]);
 
-  // A fragment is not sent in the HTTP request, keeping the bearer token out
-  // of routine server/proxy access logs and referrer headers.
-  const link = share ? `${BACKEND_URL}/api/public/share#${share.token}` : "";
+  const link = share ? `${BACKEND_URL}/api/public/share/${share.token}` : "";
 
   const start = async () => {
-    if (!user?.location_consent) {
-      setGpsErr("consent_required");
-      return;
-    }
     setBusy(true);
     setGpsErr(null);
     const r = await getCurrentCoords();
@@ -125,13 +111,7 @@ export default function ShareScreen() {
       <ScreenHeader title="Compartilhar localização" />
       <ScrollView contentContainerStyle={{ padding: S.lg, gap: S.lg, paddingBottom: insets.bottom + S.xl }}>
         {!online ? <Banner testID="share-offline-banner" text="Sem internet. O link não será atualizado até a conexão voltar." /> : null}
-        {!user?.location_consent ? (
-          <Card testID="share-consent-card">
-            <Txt variant="h2">Consentimento necessário</Txt>
-            <Txt style={{ marginVertical: S.md }}>O compartilhamento envia sua localização precisa para quem receber o link. Ative essa finalidade em Privacidade e LGPD antes de continuar.</Txt>
-            <Btn testID="share-consent-settings" label="Abrir Privacidade" icon="shield-checkmark" onPress={() => router.push("/privacy")} />
-          </Card>
-        ) : !perm.loaded ? null : !perm.granted ? (
+        {!perm.loaded ? null : !perm.granted ? (
           <PermissionCard
             testID="share-permission-card"
             title="Permitir localização"

@@ -10,13 +10,12 @@ import { Btn, Empty, Field, Icon, ScreenHeader, Sheet, Txt, useToast } from "@/s
 import { makeStyles, useTheme } from "@/src/theme";
 import { fmtDate } from "@/src/time";
 
-type Tab = "moderacao" | "forum" | "usuarios" | "planos" | "autoridades" | "sugestoes";
+type Tab = "moderacao" | "usuarios" | "planos" | "autoridades" | "sugestoes";
 type A = { id: string; category: string; description: string; created_at: string; flags: number; lat: number; lng: number; flag_reasons?: string[] };
 type U = { id: string; name: string; email: string; role: string; is_premium: boolean; blocked: boolean };
 type P = { id: string; name: string; price_cents: number; interval: string };
 type Authority = { id: string; name: string; integration_status: string; created_at: string };
 type Feedback = { id: string; category: "sugestao" | "problema" | "funcionalidade"; message: string; status: string; created_at: string };
-type ForumPost = { id: string; author: string; message: string; topic?: string; reports: number; hidden: boolean; report_reasons?: string[]; created_at: string };
 
 export default function Admin() {
   const s = useStyles();
@@ -34,7 +33,6 @@ export default function Admin() {
   const [authorityKeyword, setAuthorityKeyword] = useState("");
   const [editingAuthorityId, setEditingAuthorityId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<Feedback[] | null>(null);
-  const [forumPosts, setForumPosts] = useState<ForumPost[] | null>(null);
   const [prices, setPrices] = useState<Record<string, string>>({});
   const [rejecting, setRejecting] = useState<A | null>(null);
   const [reason, setReason] = useState("");
@@ -49,7 +47,6 @@ export default function Admin() {
     }).catch(() => {});
     api<Authority[]>("/admin/authorities").then(setAuthorities).catch(() => {});
     api<Feedback[]>("/admin/feedback").then(setFeedback).catch(() => {});
-    api<ForumPost[]>("/admin/community/messages").then(setForumPosts).catch(() => {});
   }, [toast]);
   useEffect(load, [load]);
 
@@ -64,14 +61,6 @@ export default function Admin() {
     } catch (e) {
       toast(errMsg(e), "error");
     }
-  };
-
-  const moderateForumPost = async (post: ForumPost, decision: "manter" | "ocultar") => {
-    try {
-      await api(`/admin/community/messages/${post.id}/moderate`, { method: "POST", body: { decision } });
-      setForumPosts((items) => items?.filter((item) => item.id !== post.id) ?? []);
-      toast(decision === "manter" ? "Publicação mantida no fórum." : "Publicação ocultada do fórum.", "success");
-    } catch (e) { toast(errMsg(e), "error"); }
   };
 
   const block = async (u: U) => {
@@ -130,23 +119,15 @@ export default function Admin() {
           </View>
         ))}
       </ScrollView>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexGrow: 0 }} contentContainerStyle={s.seg}>
-        {(["moderacao", "forum", "usuarios", "planos", "autoridades", "sugestoes"] as Tab[]).map((t) => (
+      <View style={s.seg}>
+        {(["moderacao", "usuarios", "planos", "autoridades", "sugestoes"] as Tab[]).map((t) => (
           <Pressable key={t} testID={`admin-tab-${t}`} onPress={() => setTab(t)} style={[s.segBtn, tab === t && s.segOn]}>
-            <Txt style={[s.segText, tab === t && { color: colors.onBrand }]}>{({ moderacao: "Alertas", forum: "Fórum", usuarios: "Usuários", planos: "Planos", autoridades: "Autoridades", sugestoes: "Sugestões" } as Record<Tab, string>)[t]}</Txt>
+            <Txt style={[s.segText, tab === t && { color: colors.onBrand }]}>{({ moderacao: "Moderação", usuarios: "Usuários", planos: "Planos", autoridades: "Autoridades", sugestoes: "Sugestões" } as Record<Tab, string>)[t]}</Txt>
           </Pressable>
         ))}
-      </ScrollView>
+      </View>
       <KeyboardAwareScrollView bottomOffset={24} keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: S.lg, gap: S.md, paddingBottom: insets.bottom + S.xl }}>
-        {tab === "forum" ? (
-          !forumPosts ? <ActivityIndicator color={colors.brand} /> : forumPosts.length === 0 ? <Empty testID="admin-forum-empty" icon="checkmark-circle-outline" title="Nenhuma publicação sinalizada" text="Denúncias da comunidade aparecerão aqui para revisão." /> : forumPosts.map((post) => (
-            <View key={post.id} testID={`admin-forum-post-${post.id}`} style={s.card}>
-              <View style={s.head}><Icon name="chatbubbles" size={20} color={colors.brandPrimary} /><Txt style={s.title}>{post.author} · {post.topic ?? "geral"}</Txt><Txt style={{ color: colors.error, fontFamily: F.bold }}>{post.reports} denúncia(s)</Txt></View>
-              <Txt>{post.message}</Txt><Txt variant="small">{fmtDate(post.created_at)}{post.report_reasons?.length ? ` · ${post.report_reasons.join(", ")}` : ""}{post.hidden ? " · Ocultada automaticamente" : ""}</Txt>
-              <View style={{ flexDirection: "row", gap: S.sm }}><Btn testID={`admin-forum-keep-${post.id}`} small label="Manter" icon="checkmark" variant="navy" onPress={() => moderateForumPost(post, "manter")} style={{ flex: 1 }} /><Btn testID={`admin-forum-hide-${post.id}`} small label="Ocultar" icon="eye-off" variant="danger" onPress={() => moderateForumPost(post, "ocultar")} style={{ flex: 1 }} /></View>
-            </View>
-          ))
-        ) : tab === "moderacao" ? (
+        {tab === "moderacao" ? (
           !alerts ? <ActivityIndicator color={colors.brand} /> : alerts.length === 0 ? <Empty testID="admin-no-pending" icon="checkmark-circle-outline" title="Nada para moderar" /> :
           alerts.map((a) => (
             <View key={a.id} testID={`admin-alert-${a.id}`} style={s.card}>
@@ -228,8 +209,8 @@ const useStyles = makeStyles((c) => ({
   stats: { gap: S.sm, padding: S.lg, paddingBottom: 0 },
   stat: { width: 100, backgroundColor: c.surface, borderRadius: R.md, padding: S.md, borderWidth: 1, borderColor: c.border, flexShrink: 0 },
   statNum: { fontFamily: F.black, fontSize: 22, color: c.brand },
-  seg: { flexDirection: "row", margin: S.lg, marginBottom: 0, backgroundColor: c.surfaceTertiary, borderRadius: R.md, padding: 4, gap: 4 },
-  segBtn: { minWidth: 96, minHeight: 44, paddingHorizontal: S.md, alignItems: "center", justifyContent: "center", borderRadius: R.sm + 4 },
+  seg: { flexDirection: "row", margin: S.lg, marginBottom: 0, backgroundColor: c.surfaceTertiary, borderRadius: R.md, padding: 4 },
+  segBtn: { flex: 1, minHeight: 44, alignItems: "center", justifyContent: "center", borderRadius: R.sm + 4 },
   segOn: { backgroundColor: c.brand },
   segText: { fontFamily: F.semibold, fontSize: 14, color: c.onSurface },
   card: { backgroundColor: c.surface, borderRadius: R.md, padding: S.lg, gap: S.sm, borderWidth: 1, borderColor: c.border },

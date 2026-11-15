@@ -1,4 +1,4 @@
-import { createContext, PropsWithChildren, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { createContext, PropsWithChildren, useCallback, useContext, useEffect, useState } from "react";
 
 import { api, setUnauthorizedHandler, TOKEN_KEY } from "@/src/api";
 import { storage } from "@/src/utils/storage";
@@ -33,37 +33,20 @@ const Ctx = createContext<AuthCtx>({} as AuthCtx);
 export function AuthProvider({ children }: PropsWithChildren) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
-  const logoutInFlight = useRef<Promise<void> | null>(null);
 
   const logout = useCallback(async () => {
-    if (logoutInFlight.current) return logoutInFlight.current;
-    const operation = (async () => {
-      try {
-        const pushToken = await storage.secureGet("push_token", null as string | null);
-        if (pushToken) {
-          let timeout: ReturnType<typeof setTimeout>;
-          await Promise.race([
-            api("/push/token", { method: "DELETE", body: { token: pushToken }, skipUnauthorizedHandler: true }).catch(() => {}),
-            new Promise<void>((resolve) => { timeout = setTimeout(resolve, 1500); }),
-          ]);
-          clearTimeout(timeout!);
-          await storage.secureRemove("push_token").catch(() => {});
-        }
-      } catch {
-        // A push-token cleanup issue must not prevent the session revocation call.
-      } finally {
-        await api("/auth/logout", { method: "POST", skipUnauthorizedHandler: true }).catch(() => {});
-        await storage.secureRemove("push_token").catch(() => {});
-        await storage.secureRemove(TOKEN_KEY).catch(() => {});
-        setUser(null);
-      }
-    })();
-    logoutInFlight.current = operation;
-    try {
-      await operation;
-    } finally {
-      logoutInFlight.current = null;
+    const pushToken = await storage.secureGet("push_token", null as string | null);
+    if (pushToken) {
+      let timeout: ReturnType<typeof setTimeout>;
+      await Promise.race([
+        api("/push/token", { method: "DELETE", body: { token: pushToken } }).catch(() => {}),
+        new Promise<void>((resolve) => { timeout = setTimeout(resolve, 1500); }),
+      ]);
+      clearTimeout(timeout!);
+      await storage.secureRemove("push_token");
     }
+    await storage.secureRemove(TOKEN_KEY);
+    setUser(null);
   }, []);
 
   const refresh = useCallback(async () => {

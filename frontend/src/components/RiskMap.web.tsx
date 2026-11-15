@@ -1,5 +1,5 @@
 // Web map: OSM base layer with interactive alert pins and nearby-point clusters.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { LayoutChangeEvent, Linking, Pressable, ScrollView, StyleSheet, View } from "react-native";
 
 import { catOf, F, R, S } from "@/src/constants";
@@ -18,32 +18,18 @@ const mercatorY = (latitude: number) => {
   return Math.log(Math.tan(Math.PI / 4 + radians / 2));
 };
 
-export function RiskMap({ alerts, region, onSelect, cameraFollow = false, currentPosition = null, travelMode = "driving", routeCoordinates = [], matchedCoordinates = [] }: { alerts: MapAlert[]; region: Region; onRegionChange: (r: Region) => void; showUser: boolean; onSelect: (a: MapAlert) => void; cameraFollow?: boolean; currentPosition?: MapPosition | null; travelMode?: "driving" | "walking"; routeCoordinates?: Coordinate[]; matchedCoordinates?: Coordinate[] }) {
+export function RiskMap({ alerts, region, onSelect, routeCoordinates = [], matchedCoordinates = [] }: { alerts: MapAlert[]; region: Region; onRegionChange: (r: Region) => void; showUser: boolean; onSelect: (a: MapAlert) => void; cameraFollow?: boolean; currentPosition?: MapPosition | null; routeCoordinates?: Coordinate[]; matchedCoordinates?: Coordinate[] }) {
   const s = useStyles();
   const { colors } = useTheme();
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [zoom, setZoom] = useState(1);
   const [center, setCenter] = useState({ latitude: region.latitude, longitude: region.longitude });
-  const lastFollowAt = useRef(0);
   const latSpan = 0.06 / zoom;
   const minY = mercatorY(center.latitude - latSpan / 2);
   const maxY = mercatorY(center.latitude + latSpan / 2);
   const ySpan = maxY - minY;
   const lonSpan = size.height > 0 ? (ySpan * (size.width / size.height) * 180) / Math.PI : 0.1 / zoom;
   const bbox = `${center.longitude - lonSpan / 2},${center.latitude - latSpan / 2},${center.longitude + lonSpan / 2},${center.latitude + latSpan / 2}`;
-
-  useEffect(() => {
-    if (!cameraFollow || !currentPosition || Date.now() - lastFollowAt.current < 8000) return;
-    lastFollowAt.current = Date.now();
-    setCenter({ latitude: currentPosition.latitude, longitude: currentPosition.longitude });
-    setZoom(7);
-  }, [cameraFollow, currentPosition]);
-
-  const vehiclePoint = currentPosition && size.width && size.height ? {
-    x: ((currentPosition.longitude - (center.longitude - lonSpan / 2)) / lonSpan) * size.width,
-    y: (1 - (mercatorY(currentPosition.latitude) - mercatorY(center.latitude - latSpan / 2)) /
-      (mercatorY(center.latitude + latSpan / 2) - mercatorY(center.latitude - latSpan / 2))) * size.height,
-  } : null;
 
   const pins = useMemo(() => {
     if (!size.width || !size.height) return [] as Pin[];
@@ -130,7 +116,6 @@ export function RiskMap({ alerts, region, onSelect, cameraFollow = false, curren
             );
           })}
         </View>
-        {cameraFollow && currentPosition && vehiclePoint && vehiclePoint.x >= 0 && vehiclePoint.x <= size.width && vehiclePoint.y >= 0 && vehiclePoint.y <= size.height ? <View pointerEvents="none" style={[s.vehicleHalo, { left: vehiclePoint.x - 27, top: vehiclePoint.y - 27 }]}><View style={s.vehicleMarker}><View style={{ transform: [{ rotate: `${currentPosition.heading ?? 0}deg` }] }}><Icon name={travelMode === "driving" ? "car-sport" : "walk"} size={23} color={colors.brand} /></View></View></View> : null}
         <View style={s.navigation}>
           <Pressable testID="map-pan-north" accessibilityLabel="Mover mapa para o norte" onPress={() => setCenter((point) => ({ ...point, latitude: point.latitude + latSpan * 0.3 }))} style={s.zoomButton}><Icon name="chevron-up" size={20} color={colors.brand} /></Pressable>
           <View style={s.navigationRow}>
@@ -175,6 +160,4 @@ const useStyles = makeStyles((c) => ({
   zoomText: { fontFamily: F.bold, fontSize: 24, lineHeight: 28, color: c.brand },
   mapCount: { position: "absolute", left: S.md, bottom: S.md, backgroundColor: c.surface, borderRadius: R.pill, paddingHorizontal: S.md, paddingVertical: S.xs, elevation: 3 },
   mapCountText: { fontFamily: F.semibold, fontSize: 12, color: c.onSurface },
-  vehicleHalo: { position: "absolute", width: 54, height: 54, borderRadius: 27, backgroundColor: "rgba(255,255,255,0.38)", alignItems: "center", justifyContent: "center" },
-  vehicleMarker: { width: 42, height: 42, borderRadius: 21, borderWidth: 3, borderColor: "#FFFFFF", backgroundColor: "#FFFFFF", alignItems: "center", justifyContent: "center", elevation: 7 },
 }));

@@ -66,7 +66,7 @@ export default function Privacy() {
           <View style={s.row}>
             <View style={{ flex: 1 }}>
               <Txt variant="label">Usar minha localização</Txt>
-              <Txt variant="small">Controla o uso de GPS no mapa, navegação, SOS e compartilhamento. Desativar encerra links ativos; o SOS continua disponível sem enviar coordenadas. A permissão do aparelho também é necessária.</Txt>
+              <Txt variant="small">Preferência registrada para SOS, mapa e compartilhamento. A permissão do sistema continua sendo pedida no momento do uso.</Txt>
             </View>
             <Switch testID="privacy-location-switch" value={consent} onValueChange={toggle} trackColor={{ true: colors.brandPrimary, false: colors.borderStrong }} thumbColor={colors.surface} />
           </View>
@@ -74,7 +74,7 @@ export default function Privacy() {
         <Card><PrivacyText /></Card>
         <Card>
           <Txt variant="label">Seus dados</Txt>
-          <Txt variant="small" style={{ marginBottom: S.md }}>Exporte uma cópia dos seus dados. Segredos de acesso, como tokens de dispositivos, pagamentos e links, são omitidos por segurança.</Txt>
+          <Txt variant="small" style={{ marginBottom: S.md }}>Exporte uma cópia de tudo que guardamos sobre você (art. 18 da LGPD).</Txt>
           <Btn testID="privacy-export-button" label="Exportar meus dados" icon="download" variant="outline" onPress={exportData} loading={exporting} />
           <Btn testID="privacy-delete-button" label="Excluir minha conta" icon="trash" variant="danger" onPress={() => setDelOpen(true)} style={{ marginTop: S.md }} />
         </Card>
@@ -82,7 +82,7 @@ export default function Privacy() {
       <Sheet visible={delOpen} onClose={() => setDelOpen(false)} testID="delete-account-sheet">
         <Txt variant="h2">Excluir conta definitivamente</Txt>
         <Txt style={{ marginVertical: S.md }}>
-          Seus contatos, histórico, mensagens e compartilhamentos serão apagados. Alertas publicados permanecem anônimos. A renovação de uma assinatura ativa será cancelada na Stripe antes da exclusão; o período já pago não será reembolsado e o acesso à conta termina agora. Se a Stripe não confirmar o cancelamento, a conta não será excluída e você poderá tentar novamente. Esta ação não pode ser desfeita.
+          Seus contatos, histórico e compartilhamentos serão apagados. Alertas já publicados permanecem anônimos. Assinaturas ativas devem ser canceladas na Stripe. Esta ação não pode ser desfeita.
         </Txt>
         <Field testID="delete-confirm-input" label='Digite EXCLUIR para confirmar' value={typed} onChangeText={setTyped} autoCapitalize="characters" />
         <Btn testID="delete-confirm-button" label="Excluir conta" variant="danger" onPress={remove} loading={deleting} disabled={typed.trim() !== "EXCLUIR"} />

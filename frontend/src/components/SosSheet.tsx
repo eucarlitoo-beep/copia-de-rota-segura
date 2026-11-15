@@ -41,19 +41,14 @@ export function SosSheet({ visible, onClose }: { visible: boolean; onClose: () =
   const confirm = async () => {
     setBusy(true);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
-    let loc: Awaited<ReturnType<typeof getCurrentCoords>> | null = null;
-    if (user?.location_consent) {
-      if (!perm.granted && perm.canAskAgain) await perm.request();
-      loc = await getCurrentCoords();
-      if (loc.ok) setCoords(loc.coords);
-      else setLocErr(loc.reason);
-    } else {
-      setLocErr("consent_required");
-    }
+    if (!perm.granted && perm.canAskAgain) await perm.request();
+    const loc = await getCurrentCoords();
+    if (loc.ok) setCoords(loc.coords);
+    else setLocErr(loc.reason);
     try {
       const inc = await api<{ id: string }>("/sos", {
         method: "POST",
-        body: loc?.ok ? { lat: loc.coords.lat, lng: loc.coords.lng, accuracy: loc.coords.accuracy } : {},
+        body: loc.ok ? { lat: loc.coords.lat, lng: loc.coords.lng, accuracy: loc.coords.accuracy } : {},
       });
       setIncidentId(inc.id);
     } catch {
@@ -103,12 +98,9 @@ export function SosSheet({ visible, onClose }: { visible: boolean; onClose: () =
     if (!incidentId) return toast("Sem conexão com o servidor. Use SMS ou ligue 190.", "error");
     setBusy(true);
     try {
-      const r = await api<{ sent: number; total: number; partial: boolean }>(`/sos/${incidentId}/email`, { method: "POST" });
-      const result = r.partial
-        ? `Enviado a ${r.sent} de ${r.total}; use SMS/WhatsApp para avisar os demais.`
-        : `E-mail enviado a ${r.sent} contato(s).`;
-      setDone((d) => ({ ...d, email: result }));
-      toast(result, r.partial ? "error" : "success");
+      const r = await api<{ sent: number; total: number }>(`/sos/${incidentId}/email`, { method: "POST" });
+      setDone((d) => ({ ...d, email: `E-mail enviado a ${r.sent} de ${r.total}` }));
+      toast(`E-mail enviado a ${r.sent} contato(s).`, "success");
     } catch (e) {
       toast(errMsg(e), "error");
     }
@@ -133,7 +125,7 @@ export function SosSheet({ visible, onClose }: { visible: boolean; onClose: () =
           <Txt variant="title" style={{ textAlign: "center" }}>Acionar SOS?</Txt>
           <Txt style={{ textAlign: "center", marginVertical: S.md }}>
             Nada é enviado automaticamente. Na próxima tela você escolhe ligar para a emergência ou avisar seus contatos.
-            Se você autorizou o uso da localização, ela poderá ser incluída. O SOS também funciona sem coordenadas.
+            Sua localização atual será incluída na mensagem.
           </Txt>
           <Btn testID="sos-confirm-button" label="Sim, preciso de ajuda" icon="alert-circle" onPress={confirm} loading={busy} style={{ minHeight: 64 }} />
           <Btn testID="sos-cancel-button" label="Cancelar" variant="ghost" onPress={onClose} style={{ marginTop: S.sm }} />
