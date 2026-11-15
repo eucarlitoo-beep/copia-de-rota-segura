@@ -24,7 +24,6 @@ export default function Report() {
   const [source, setSource] = useState<"gps" | "map">(hasMapPoint ? "map" : "gps");
   const [category, setCategory] = useState<string | null>(null);
   const [description, setDescription] = useState("");
-  const [neighborhood, setNeighborhood] = useState("");
   const [error, setError] = useState("");
   const [gpsErr, setGpsErr] = useState<LocFailure | null>(null);
   const [busy, setBusy] = useState(false);
@@ -50,7 +49,7 @@ export default function Report() {
       lng = Number(params.lng);
     }
     try {
-      await api("/alerts", { method: "POST", body: { category, description: description.trim(), neighborhood: neighborhood.trim() || undefined, lat, lng } });
+      await api("/alerts", { method: "POST", body: { category, description: description.trim(), lat, lng } });
       toast("Relato enviado para moderação. Avisaremos quando for analisado.", "success");
       router.back();
     } catch (e) {
@@ -95,8 +94,6 @@ export default function Report() {
           multiline
           placeholder="Ex.: Trecho escuro com relatos de abordagem perto do viaduto."
         />
-        <Field testID="report-neighborhood-input" label="Bairro (opcional)" value={neighborhood} onChangeText={(value) => setNeighborhood(value.slice(0, 80))} placeholder="Ex.: Centro" />
-        <Txt variant="small">O bairro informado ajuda a montar estatísticas colaborativas. Não é uma estatística oficial de segurança pública.</Txt>
         <View>
           <Txt variant="label">Local do relato</Txt>
           <View style={s.src}>

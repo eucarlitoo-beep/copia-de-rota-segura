@@ -29,7 +29,7 @@
 
 - `python -m compileall -q backend`: passou.
 - JSON de `frontend/app.json`: passou na validação.
-- Testes de integração/nativos não executados nesta cópia: a validação com MongoDB/API, GPS real, microfone e dispositivos requer serviços configurados e aparelhos com permissões autorizadas.
+- Testes de integração e compilação TypeScript/nativa não executados nesta cópia: o ZIP não inclui dependências instaladas, MongoDB/API configurados ou ambiente de build Expo. A validação em GPS real, microfone e dispositivos de outras cidades requer builds e aparelhos com permissões autorizadas.
 
 ## Configuração externa
 
@@ -39,12 +39,3 @@
 - Não existe integração oficial de alertas com autoridades cadastradas.
 - Google Maps SDK continua necessário para os builds de produção, conforme a configuração original do projeto. Stripe só é usada se alguém escolher um plano Premium existente.
 - O `backend/requirements.txt` foi reduzido às dependências importadas pelo backend e pelos testes. Dependências privadas da plataforma Emergent, que não eram usadas no código, foram removidas. A chave `EMERGENT_EMAIL_KEY` e `EMAIL_FROM_NAME` são opcionais para iniciar localmente; sem chave, o envio de e-mail retorna indisponível.
-
-## Fórum, estatísticas por bairro e navegação
-
-- A Comunidade SOS agora organiza publicações por assunto (apoio, trajetos, riscos e geral). Publicações denunciadas ou ocultadas automaticamente entram na fila de revisão em **Painel administrativo > Fórum**.
-- O formulário de alerta aceita bairro opcional. O gráfico agrega apenas relatos aprovados que informaram bairro e exibe separadamente as categorias (assalto, roubo de veículo, via perigosa, acidente, alagamento, falta de iluminação e outros). É um indicador da comunidade, não uma estatística policial oficial; bairro digitado não é validado por geocodificação.
-- Para Salvador, o gráfico oferece atalhos oficiais da SSP-BA/SEI. A SSP publica microdados de mortes violentas e veículos com campo de bairro, mas isso não cobre toda categoria de risco do app; os dados policiais também têm recortes e periodicidades próprios. Os valores oficiais não são misturados ao contador colaborativo.
-- O mapa acompanha a posição em navegação com câmera inclinada, mapa escuro, instrução de manobra, rota, cartão de distância/tempo e marcador próprio de carro ou pessoa.
-- Rotas de carro e ajuste GPS seguem `OSRM_BASE_URL`. Para rotas e ajuste a pé, configure `OSRM_FOOT_BASE_URL` no `backend/.env` para uma instância compatível com o perfil `walking`; sem ela, o app informa que a rota a pé não está disponível. Escolha o provedor respeitando disponibilidade, limites de uso e privacidade das coordenadas.
-- Validação desta revisão: TypeScript (`tsc --noEmit`), sintaxe Python (`py_compile`) e `git diff --check` passaram. Não foi executado teste integrado com MongoDB ou aparelho GPS.
