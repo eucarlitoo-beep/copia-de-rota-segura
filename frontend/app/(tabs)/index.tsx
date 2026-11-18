@@ -86,6 +86,7 @@ export default function Home() {
         </Animated.View>
         <Tile testID="home-history-tile" icon="time" title="Histórico de ocorrências" sub="Seus SOS e relatos" onPress={() => router.push("/history")} row />
         <Tile testID="home-community-tile" icon="chatbubbles" title="Comunidade SOS" sub="Converse e receba apoio" onPress={() => router.push("/community")} row />
+        <Tile testID="home-forum-tile" icon="chatbox-ellipses" title="Fórum" sub="Discussões sobre segurança e comunidade" onPress={() => router.push("/forum")} row />
       </ScrollView>
       <SosSheet visible={sos} onClose={() => setSos(false)} />
     </View>

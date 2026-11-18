@@ -21,7 +21,7 @@
 | users | id uuid, name, email unique, password_hash, phone, driver_type, vehicle, city, role, plan, plan_expires_at, blocked, lgpd_consent_at, location_consent |
 | contacts | id, user_id → users, name, phone, email, relation |
 | incidents | id, user_id, type='sos', lat, lng, accuracy, status, actions jsonb |
-| alerts | id, reporter_id (nulo se conta excluída), category, description, lat/lng arredondados, status (pendente/aprovado/rejeitado), confirmations, flags |
+| alerts | id, reporter_id (nulo se conta excluída), category, description, lat/lng arredondados, neighborhood, street, locality, region, status (pendente/aprovado/rejeitado), confirmations, flags |
 | shares | id, token unique, user_id, lat, lng, expires_at, active |
 | notifications | id, user_id, title, body, kind, read |
 | plans | id, name, price_cents, interval, features jsonb, active |
@@ -42,24 +42,26 @@ frontend/
     (tabs)/mapa.tsx   # mapa colaborativo
     (tabs)/alertas.tsx
     (tabs)/perfil.tsx
-    login.tsx register.tsx contacts.tsx share.tsx report.tsx history.tsx
-    notifications.tsx plans.tsx privacy.tsx profile-edit.tsx admin.tsx feedback.tsx keyword.tsx
+    login.tsx register.tsx forgot-password.tsx reset-password.tsx contacts.tsx share.tsx report.tsx history.tsx
+    notifications.tsx plans.tsx privacy.tsx profile-edit.tsx admin.tsx feedback.tsx keyword.tsx statistics.tsx
   src/
     api.ts auth.tsx location.ts net.ts constants.ts theme.ts time.ts
     components/ (ui.tsx, SosSheet.tsx, RiskMap.tsx, RiskMap.web.tsx, PrivacyText.tsx)
 ```
 
 ## 3. Dependências principais
-expo-router, expo-location, expo-speech-recognition, react-native-maps, expo-sms, expo-clipboard, expo-web-browser, @react-native-community/netinfo, react-native-reanimated, react-native-keyboard-controller, @react-native-vector-icons/ionicons, date-fns. Backend: fastapi, motor, bcrypt, PyJWT, stripe, httpx.
+expo-router, expo-location, expo-speech-recognition, expo-auth-session, expo-crypto, expo-apple-authentication, react-native-maps, expo-sms, expo-clipboard, expo-web-browser, @react-native-community/netinfo, react-native-reanimated, react-native-keyboard-controller, @react-native-vector-icons/ionicons, date-fns. Backend: fastapi, motor, bcrypt, PyJWT[crypto], stripe, httpx.
 
 ## 4. Segurança, privacidade e moderação
 - Senhas com bcrypt; JWT 7 dias; bloqueio de 15 min após 5 tentativas de login.
+- Login preserva o backend/contas atuais. “Manter conectado” salva o JWT no Keychain/armazenamento seguro; desmarcado, ele fica apenas em memória. Recuperação envia link de uso único (30 min), responde sem confirmar se o e-mail existe e invalida sessões JWT anteriores após troca da senha. Requer `EMERGENT_EMAIL_KEY` e `PUBLIC_APP_URL=rotasegura://reset-password`.
+- Google/Apple: o backend valida assinaturas OIDC via JWKS e só vincula ao usuário existente por e-mail verificado; não cria conta. Configure `GOOGLE_OAUTH_CLIENT_IDS` e `APPLE_OAUTH_CLIENT_IDS` no backend e os Client IDs públicos `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID`, `EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID`, `EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID` no frontend/EAS. Google pede seleção de conta no navegador. Sign in with Apple exige ativar a capacidade Apple no Apple Developer e gerar novo build iOS; o sistema Apple usa a conta configurada no dispositivo (não lista várias contas).
 - SOS **nunca** envia nada sozinho: o motorista confirma e escolhe ligar, abrir WhatsApp/SMS (ele aperta enviar) ou disparar e-mail pelo servidor (limite 3/hora).
-- Alertas: moderação prévia; bloqueio de placas, CPF, telefones e termos acusatórios; limite 5/dia; coordenadas arredondadas (~100 m); 3 denúncias devolvem o alerta à moderação; autor nunca exibido.
+- Alertas: moderação prévia; bloqueio de placas, CPF, telefones e termos acusatórios; limite 5/dia; coordenadas arredondadas (~100 m); 3 denúncias devolvem o alerta à moderação; autor nunca exibido. Estatísticas usam somente alertas aprovados. Nomes de ruas aparecem apenas com pelo menos 3 relatos de pessoas diferentes agrupados no período/filtros; não guardamos nem mostramos número de imóvel.
 - LGPD: consentimento no cadastro, preferência de localização, exportação dos dados e exclusão da conta.
 - Palavra-chave: armazenada no cofre seguro do aparelho; escuta apenas quando iniciada pelo usuário e enquanto a tela está aberta. Requer build nativo com `expo-speech-recognition`; não funciona no Expo Go sem rebuild e não oferece monitoramento em segundo plano. As palavras-chave de autoridades são guardadas com hash e ainda não encaminham alertas: integração oficial precisa ser contratada/autorizada.
 - Sugestões: dados ligados à conta e visíveis apenas no painel admin.
-- Seleção manual de cidade: busca Nominatim com limitação de frequência; localização do dispositivo usa GPS e geocodificação reversa do sistema quando disponível. Não existe coordenada padrão fixa.
+- Seleção manual de cidade e sugestão de bairro: o proxy de backend usa `GEOCODING_BASE_URL` e `GEOCODING_USER_AGENT`, com limite de frequência e cache da geocodificação reversa aproximada. A busca reversa só ocorre após ação do usuário, recebe coordenadas arredondadas (~100 m) e retorna bairro, rua, município e região sem número de imóvel. O app sempre exige revisão/aceite manual; OSM pode retornar a área vizinha ou nenhuma área. Exibe atribuição © OpenStreetMap contributors. Não reprocessa ocorrências antigas em lote. O mapa de riscos existente continua usando as coordenadas arredondadas dos relatos aprovados e mostra apenas bairro/município/região, nunca rua.
 - Sem internet: banner de aviso; ligações e SMS continuam disponíveis.
 
 ## 5. Rodar no Windows (desenvolvimento local)

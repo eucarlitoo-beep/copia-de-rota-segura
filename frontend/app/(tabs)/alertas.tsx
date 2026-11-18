@@ -14,6 +14,7 @@ import { makeStyles, useTheme } from "@/src/theme";
 import { timeAgo } from "@/src/time";
 
 type Alert = { id: string; category: string; description: string; created_at: string; confirmations: number; confirmed_by_me: boolean; flagged_by_me: boolean; is_mine: boolean; lat: number; lng: number };
+type AlertStatistics = { total: number; categories: { category: string; total: number }[] };
 
 const FLAG_REASONS = [
   { key: "falso", label: "Informação falsa" },
@@ -32,6 +33,7 @@ export default function Alertas() {
   const toast = useToast();
   const [cat, setCat] = useState<string | null>(null);
   const [items, setItems] = useState<Alert[]>([]);
+  const [chartStatistics, setChartStatistics] = useState<AlertStatistics | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
@@ -40,11 +42,13 @@ export default function Alertas() {
 
   const load = useCallback(async () => {
     setError("");
-    try {
-      setItems(await api<Alert[]>("/alerts"));
-    } catch (e) {
-      setError(errMsg(e));
-    }
+    const [alertsResult, statisticsResult] = await Promise.allSettled([
+      api<Alert[]>("/alerts"),
+      api<AlertStatistics>("/alerts/statistics?days=3"),
+    ]);
+    if (alertsResult.status === "fulfilled") setItems(alertsResult.value);
+    else setError(errMsg(alertsResult.reason));
+    setChartStatistics(statisticsResult.status === "fulfilled" ? statisticsResult.value : null);
     setLoading(false);
     setRefreshing(false);
   }, []);
@@ -77,6 +81,15 @@ export default function Alertas() {
     setFlagging(null);
   };
 
+  const discuss = async (alert: Alert) => {
+    try {
+      const result = await api<{ post_id: string }>("/alerts/" + alert.id + "/discussion", { method: "POST" });
+      router.push({ pathname: "/forum", params: { postId: result.post_id } });
+    } catch (e) {
+      toast(errMsg(e), "error");
+    }
+  };
+
   const chips = [{ key: null, label: "Todos" }, ...CATEGORIES.map((c) => ({ key: c.key, label: c.label }))];
   const visibleItems = cat ? items.filter((item) => item.category === cat) : items;
 
@@ -85,6 +98,9 @@ export default function Alertas() {
       <View style={[s.header, { paddingTop: insets.top + S.md }]}>
         <View style={s.headRow}>
           <Txt style={s.title}>Alertas</Txt>
+          <Pressable testID="alerts-statistics-button" accessibilityRole="button" accessibilityLabel="Abrir estatísticas" onPress={() => router.push("/statistics")} style={s.statsBtn}>
+            <Icon name="analytics" size={20} color={colors.onBrand} />
+          </Pressable>
           <Pressable testID="alerts-report-button" onPress={() => router.push("/report")} style={s.newBtn}>
             <Icon name="add" size={20} color={colors.onBrandPrimary} />
             <Txt style={s.newText}>Relatar</Txt>
@@ -119,7 +135,7 @@ export default function Alertas() {
           keyExtractor={(a) => a.id}
           contentContainerStyle={{ padding: S.lg, gap: S.md, paddingBottom: bottomChrome + S.xl }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={colors.brand} />}
-          ListHeaderComponent={<View style={{ gap: S.md }}><Txt variant="small">Relatos moderados das últimas 72h. Não identificamos pessoas — apenas situações de risco.</Txt><RiskChart alerts={items} /></View>}
+          ListHeaderComponent={<View style={{ gap: S.md }}><Txt variant="small">Relatos moderados das últimas 72h. Não identificamos pessoas — apenas situações de risco.</Txt><RiskChart statistics={chartStatistics} /></View>}
           ListEmptyComponent={<Empty testID="alerts-empty" icon="sunny" title="Nenhuma ocorrência reportada" text="Nenhum alerta aprovado nesta categoria nas últimas 72 horas." />}
           renderItem={({ item, index }) => {
             const c = catOf(item.category);
@@ -134,6 +150,10 @@ export default function Alertas() {
                   <Txt variant="small">{timeAgo(item.created_at)}</Txt>
                 </View>
                 <Txt style={{ marginVertical: S.md }}>{item.description}</Txt>
+                <Pressable accessibilityRole="button" onPress={() => discuss(item)} style={[s.act, { alignSelf: "flex-start" }]}>
+                  <Icon name="chatbubble-ellipses-outline" size={18} color={colors.brand} />
+                  <Txt style={s.actText}>Discutir no fórum</Txt>
+                </Pressable>
                 {item.is_mine ? <Txt testID={`alert-mine-${item.id}`} variant="small">Seu relato · {item.confirmations} confirmação(ões)</Txt> : <View style={s.actions}>
                   <Pressable testID={`alert-confirm-${item.id}`} disabled={item.confirmed_by_me} onPress={() => confirm(item)} style={[s.act, item.confirmed_by_me && s.actOn]}>
                     <Icon name="checkmark-done" size={18} color={item.confirmed_by_me ? colors.onBrand : colors.brand} />
@@ -167,6 +187,7 @@ const useStyles = makeStyles((c) => ({
   header: { backgroundColor: c.brand },
   headRow: { flexDirection: "row", alignItems: "center", paddingHorizontal: S.xl, paddingBottom: S.sm },
   title: { flex: 1, fontFamily: F.black, fontSize: 26, color: c.onBrand },
+  statsBtn: { width: 42, height: 42, alignItems: "center", justifyContent: "center", borderRadius: R.pill, borderWidth: 1, borderColor: "rgba(255,255,255,0.45)" },
   newBtn: { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: c.brandPrimary, borderRadius: R.pill, paddingHorizontal: S.lg, minHeight: 44 },
   newText: { fontFamily: F.bold, fontSize: 14, color: c.onBrandPrimary },
   chipRow: { height: 56, flexGrow: 0 },

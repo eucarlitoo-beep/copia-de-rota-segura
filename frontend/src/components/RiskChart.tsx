@@ -1,32 +1,35 @@
-import Animated, { FadeInRight, FadeInUp, LinearTransition } from "react-native-reanimated";
-import { View } from "react-native";
+import Animated, { FadeInRight, FadeInUp, LinearTransition, useReducedMotion } from "react-native-reanimated";
+import { Pressable, View } from "react-native";
 
 import { CATEGORIES, F, R, S } from "@/src/constants";
 import { Icon, Txt } from "@/src/components/ui";
 import { makeStyles, useTheme } from "@/src/theme";
 
-type RiskDatum = { category: string };
+type RiskStatistics = { total: number; categories: { category: string; total: number }[] };
 
-export function RiskChart({ alerts }: { alerts: RiskDatum[] }) {
+export function RiskChart({ statistics }: { statistics: RiskStatistics | null }) {
   const s = useStyles();
   const { colors } = useTheme();
-  const counts = CATEGORIES.map((category) => ({ ...category, count: alerts.filter((alert) => alert.category === category.key).length }));
+  const reduceMotion = useReducedMotion();
+  const counts = CATEGORIES.map((category) => ({ ...category, count: statistics?.categories.find((row) => row.category === category.key)?.total ?? 0 }));
   const peak = Math.max(1, ...counts.map((item) => item.count));
   const leading = counts.reduce((best, item) => (item.count > best.count ? item : best), counts[0]);
+  const total = statistics?.total ?? 0;
+  const alerts = { length: total };
 
   return (
     <Animated.View entering={FadeInUp.duration(380)} style={s.card} testID="risk-chart">
       <View style={s.header}>
         <View style={{ flex: 1 }}>
           <Txt style={s.title}>Tipos de risco</Txt>
-          <Txt variant="small">Distribuição dos alertas carregados</Txt>
+          <Txt variant="small">Alertas aprovados nas últimas 72 horas</Txt>
         </View>
         <View style={s.total}>
-          <Txt style={s.totalValue}>{alerts.length}</Txt>
+          <Txt style={s.totalValue}>{statistics ? alerts.length : "—"}</Txt>
           <Txt style={s.totalLabel}>total</Txt>
         </View>
       </View>
-      {alerts.length > 0 ? (
+      {total > 0 ? (
         <View style={s.summary}>
           <Icon name={leading.icon as any} size={17} color={colors[leading.color] as string} />
           <Txt style={s.summaryText}>Mais frequente: {leading.label} ({leading.count})</Txt>
@@ -37,9 +40,13 @@ export function RiskChart({ alerts }: { alerts: RiskDatum[] }) {
           const width = `${item.count === 0 ? 0 : Math.max(7, (item.count / peak) * 100)}%` as `${number}%`;
           return (
             <Animated.View key={item.key} entering={FadeInRight.delay(index * 55).duration(360)} layout={LinearTransition.duration(420)} style={s.row} testID={`risk-chart-row-${item.key}`}>
-              <View style={[s.icon, { backgroundColor: colors[item.color] as string }]}>
+              <Pressable
+                accessibilityRole="image"
+                accessibilityLabel={`Ícone: ${item.label}`}
+                style={({ pressed }) => [s.icon, { backgroundColor: colors[item.color] as string }, pressed && !reduceMotion && s.iconPressed]}
+              >
                 <Icon name={item.icon as any} size={15} color={colors.onError} />
-              </View>
+              </Pressable>
               <View style={s.details}>
                 <View style={s.labelLine}>
                   <Txt style={s.label} numberOfLines={1}>{item.label}</Txt>
@@ -54,7 +61,7 @@ export function RiskChart({ alerts }: { alerts: RiskDatum[] }) {
           );
         })}
       </View>
-      {alerts.length === 0 ? <Txt style={s.empty}>Ainda não há alertas para montar o gráfico.</Txt> : null}
+      {!statistics ? <Txt style={s.empty}>Não foi possível atualizar este gráfico agora.</Txt> : total === 0 ? <Txt style={s.empty}>Ainda não há alertas neste período.</Txt> : null}
     </Animated.View>
   );
 }
@@ -69,7 +76,8 @@ const useStyles = makeStyles((c) => ({
   summary: { flexDirection: "row", alignItems: "center", gap: S.sm, borderRadius: R.sm, backgroundColor: c.surfaceSecondary, padding: S.sm },
   summaryText: { fontFamily: F.semibold, fontSize: 12, color: c.onSurface },
   row: { flexDirection: "row", alignItems: "center", gap: S.sm, minHeight: 32 },
-  icon: { width: 28, height: 28, borderRadius: 9, alignItems: "center", justifyContent: "center" },
+  icon: { width: 28, height: 28, borderRadius: 9, alignItems: "center", justifyContent: "center", transitionProperty: "transform", transitionDuration: "180ms" },
+  iconPressed: { transform: [{ scale: 1.12 }, { rotate: "-5deg" }] },
   details: { flex: 1, gap: 5 },
   labelLine: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: S.sm },
   label: { flex: 1, fontFamily: F.medium, fontSize: 12, color: c.onSurface },

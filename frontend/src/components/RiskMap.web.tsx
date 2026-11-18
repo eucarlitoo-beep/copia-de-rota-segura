@@ -6,7 +6,7 @@ import { catOf, F, R, S } from "@/src/constants";
 import { Icon, Txt } from "@/src/components/ui";
 import { makeStyles, useTheme } from "@/src/theme";
 
-export type MapAlert = { id: string; category: string; description: string; lat: number; lng: number; created_at: string };
+export type MapAlert = { id: string; category: string; description: string; lat: number; lng: number; created_at: string; neighborhood?: string; locality?: string; region?: string };
 type Region = { latitude: number; longitude: number; latitudeDelta: number; longitudeDelta: number };
 type Pin = { latitude: number; longitude: number; alerts: MapAlert[]; x: number; y: number };
 type MapPosition = { latitude: number; longitude: number; heading: number | null };

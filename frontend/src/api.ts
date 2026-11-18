@@ -15,12 +15,16 @@ export class ApiError extends Error {
 }
 
 let onUnauthorized: (() => void) | null = null;
+let transientAuthToken: string | null = null;
+export function setTransientAuthToken(token: string | null) {
+  transientAuthToken = token;
+}
 export function setUnauthorizedHandler(fn: () => void) {
   onUnauthorized = fn;
 }
 
 export async function api<T = any>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
-  const token = await storage.secureGet(TOKEN_KEY, null as string | null);
+  const token = transientAuthToken ?? await storage.secureGet(TOKEN_KEY, null as string | null);
   let res: Response;
   try {
     res = await fetch(`${API}${path}`, {

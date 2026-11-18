@@ -10,12 +10,14 @@ import { Btn, Empty, Field, Icon, ScreenHeader, Sheet, Txt, useToast } from "@/s
 import { makeStyles, useTheme } from "@/src/theme";
 import { fmtDate } from "@/src/time";
 
-type Tab = "moderacao" | "usuarios" | "planos" | "autoridades" | "sugestoes";
+type Tab = "moderacao" | "forum" | "usuarios" | "planos" | "autoridades" | "sugestoes";
 type A = { id: string; category: string; description: string; created_at: string; flags: number; lat: number; lng: number; flag_reasons?: string[] };
 type U = { id: string; name: string; email: string; role: string; is_premium: boolean; blocked: boolean };
 type P = { id: string; name: string; price_cents: number; interval: string };
 type Authority = { id: string; name: string; integration_status: string; created_at: string };
 type Feedback = { id: string; category: "sugestao" | "problema" | "funcionalidade"; message: string; status: string; created_at: string };
+type ForumReport = { id: string; reason: string; created_at: string; post: { id: string; title: string; body: string; author: string; category: string } | null };
+type ForumCommentReport = { id: string; reason: string; created_at: string; comment: { id: string; body: string; author: string } | null };
 
 export default function Admin() {
   const s = useStyles();
@@ -33,6 +35,8 @@ export default function Admin() {
   const [authorityKeyword, setAuthorityKeyword] = useState("");
   const [editingAuthorityId, setEditingAuthorityId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<Feedback[] | null>(null);
+  const [forumReports, setForumReports] = useState<ForumReport[] | null>(null);
+  const [forumCommentReports, setForumCommentReports] = useState<ForumCommentReport[] | null>(null);
   const [prices, setPrices] = useState<Record<string, string>>({});
   const [rejecting, setRejecting] = useState<A | null>(null);
   const [reason, setReason] = useState("");
@@ -47,6 +51,8 @@ export default function Admin() {
     }).catch(() => {});
     api<Authority[]>("/admin/authorities").then(setAuthorities).catch(() => {});
     api<Feedback[]>("/admin/feedback").then(setFeedback).catch(() => {});
+    api<ForumReport[]>("/admin/forum/reports").then(setForumReports).catch(() => {});
+    api<ForumCommentReport[]>("/admin/forum/comment-reports").then(setForumCommentReports).catch(() => {});
   }, [toast]);
   useEffect(load, [load]);
 
@@ -102,6 +108,22 @@ export default function Admin() {
     } catch (e) { toast(errMsg(e), "error"); }
   };
 
+  const moderateForum = async (postId: string, decision: "aprovado" | "rejeitado") => {
+    try {
+      await api("/admin/forum/posts/" + postId + "/moderate", { method: "POST", body: { decision, reason: "Removida após análise da denúncia." } });
+      setForumReports((items) => items?.filter((item) => item.post?.id !== postId) ?? []);
+      toast(decision === "aprovado" ? "Publicação mantida." : "Publicação removida.", "success");
+    } catch (e) { toast(errMsg(e), "error"); }
+  };
+
+  const moderateForumComment = async (commentId: string, decision: "aprovado" | "rejeitado") => {
+    try {
+      await api(`/admin/forum/comments/${commentId}/moderate`, { method: "POST", body: { decision, reason: "Removido após análise da denúncia." } });
+      setForumCommentReports((items) => items?.filter((item) => item.comment?.id !== commentId) ?? []);
+      toast(decision === "aprovado" ? "Comentário mantido." : "Comentário removido.", "success");
+    } catch (e) { toast(errMsg(e), "error"); }
+  };
+
   const STATS = [
     ["usuarios", "Usuários", "people"], ["premium", "Premium", "star"], ["alertas_pendentes", "Pendentes", "hourglass"],
     ["alertas_aprovados", "Publicados", "checkmark-done"], ["sos_total", "SOS", "alert-circle"],
@@ -119,13 +141,13 @@ export default function Admin() {
           </View>
         ))}
       </ScrollView>
-      <View style={s.seg}>
-        {(["moderacao", "usuarios", "planos", "autoridades", "sugestoes"] as Tab[]).map((t) => (
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexGrow: 0 }} contentContainerStyle={s.seg}>
+        {(["moderacao", "forum", "usuarios", "planos", "autoridades", "sugestoes"] as Tab[]).map((t) => (
           <Pressable key={t} testID={`admin-tab-${t}`} onPress={() => setTab(t)} style={[s.segBtn, tab === t && s.segOn]}>
-            <Txt style={[s.segText, tab === t && { color: colors.onBrand }]}>{({ moderacao: "Moderação", usuarios: "Usuários", planos: "Planos", autoridades: "Autoridades", sugestoes: "Sugestões" } as Record<Tab, string>)[t]}</Txt>
+            <Txt style={[s.segText, tab === t && { color: colors.onBrand }]}>{({ moderacao: "Alertas", forum: "Fórum", usuarios: "Usuários", planos: "Planos", autoridades: "Autoridades", sugestoes: "Sugestões" } as Record<Tab, string>)[t]}</Txt>
           </Pressable>
         ))}
-      </View>
+      </ScrollView>
       <KeyboardAwareScrollView bottomOffset={24} keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: S.lg, gap: S.md, paddingBottom: insets.bottom + S.xl }}>
         {tab === "moderacao" ? (
           !alerts ? <ActivityIndicator color={colors.brand} /> : alerts.length === 0 ? <Empty testID="admin-no-pending" icon="checkmark-circle-outline" title="Nada para moderar" /> :
@@ -144,6 +166,31 @@ export default function Admin() {
               </View>
             </View>
           ))
+        ) : tab === "forum" ? (
+          !forumReports || !forumCommentReports ? <ActivityIndicator color={colors.brand} /> : forumReports.length === 0 && forumCommentReports.length === 0 ? <Empty icon="checkmark-circle-outline" title="Nenhuma denúncia no fórum" /> : <>
+          {forumReports.map((item) => item.post ? (
+            <View key={item.id} style={s.card}>
+              <Txt style={s.title}>{item.post.title}</Txt>
+              <Txt>{item.post.body}</Txt>
+              <Txt variant="small">{item.post.author} · {item.post.category} · Motivo: {item.reason} · {fmtDate(item.created_at)}</Txt>
+              <View style={{ flexDirection: "row", gap: S.sm }}>
+                <Btn small label="Manter" variant="outline" onPress={() => moderateForum(item.post!.id, "aprovado")} style={{ flex: 1 }} />
+                <Btn small label="Remover publicação" variant="danger" onPress={() => moderateForum(item.post!.id, "rejeitado")} style={{ flex: 1 }} />
+              </View>
+            </View>
+          ) : null)}
+          {forumCommentReports.map((item) => item.comment ? (
+            <View key={`comment-${item.id}`} style={s.card}>
+              <Txt style={s.title}>Comentário denunciado</Txt>
+              <Txt>{item.comment.body}</Txt>
+              <Txt variant="small">{item.comment.author} · Motivo: {item.reason} · {fmtDate(item.created_at)}</Txt>
+              <View style={{ flexDirection: "row", gap: S.sm }}>
+                <Btn small label="Manter" variant="outline" onPress={() => moderateForumComment(item.comment!.id, "aprovado")} style={{ flex: 1 }} />
+                <Btn small label="Remover comentário" variant="danger" onPress={() => moderateForumComment(item.comment!.id, "rejeitado")} style={{ flex: 1 }} />
+              </View>
+            </View>
+          ) : null)}
+          </>
         ) : tab === "usuarios" ? (
           !users ? <ActivityIndicator color={colors.brand} /> : users.map((u) => (
             <View key={u.id} testID={`admin-user-${u.id}`} style={[s.card, s.head]}>
@@ -210,7 +257,7 @@ const useStyles = makeStyles((c) => ({
   stat: { width: 100, backgroundColor: c.surface, borderRadius: R.md, padding: S.md, borderWidth: 1, borderColor: c.border, flexShrink: 0 },
   statNum: { fontFamily: F.black, fontSize: 22, color: c.brand },
   seg: { flexDirection: "row", margin: S.lg, marginBottom: 0, backgroundColor: c.surfaceTertiary, borderRadius: R.md, padding: 4 },
-  segBtn: { flex: 1, minHeight: 44, alignItems: "center", justifyContent: "center", borderRadius: R.sm + 4 },
+  segBtn: { minWidth: 92, paddingHorizontal: S.sm, minHeight: 44, alignItems: "center", justifyContent: "center", borderRadius: R.sm + 4 },
   segOn: { backgroundColor: c.brand },
   segText: { fontFamily: F.semibold, fontSize: 14, color: c.onSurface },
   card: { backgroundColor: c.surface, borderRadius: R.md, padding: S.lg, gap: S.sm, borderWidth: 1, borderColor: c.border },

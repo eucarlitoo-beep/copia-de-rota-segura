@@ -1,6 +1,6 @@
 import { createContext, PropsWithChildren, useCallback, useContext, useEffect, useState } from "react";
 
-import { api, setUnauthorizedHandler, TOKEN_KEY } from "@/src/api";
+import { api, setTransientAuthToken, setUnauthorizedHandler, TOKEN_KEY } from "@/src/api";
 import { storage } from "@/src/utils/storage";
 
 export type User = {
@@ -21,7 +21,8 @@ export type User = {
 type AuthCtx = {
   user: User | null;
   loading: boolean;
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string, remember?: boolean) => Promise<void>;
+  socialLogin: (provider: "google" | "apple", idToken: string, nonce: string, remember?: boolean) => Promise<void>;
   register: (data: Record<string, unknown>) => Promise<void>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
@@ -46,6 +47,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       await storage.secureRemove("push_token");
     }
     await storage.secureRemove(TOKEN_KEY);
+    setTransientAuthToken(null);
     setUser(null);
   }, []);
 
@@ -63,22 +65,35 @@ export function AuthProvider({ children }: PropsWithChildren) {
     });
     (async () => {
       const token = await storage.secureGet(TOKEN_KEY, null as string | null);
-      if (token) await refresh();
+      setTransientAuthToken(null);
+      if (token) {
+        await refresh();
+      } else {
+        setUser(null);
+      }
       setLoading(false);
     })();
   }, [logout, refresh]);
 
-  const save = async (r: { token: string; user: User }) => {
-    await storage.secureSet(TOKEN_KEY, r.token);
+  const save = async (r: { token: string; user: User }, remember = true) => {
+    if (remember) {
+      await storage.secureSet(TOKEN_KEY, r.token);
+      setTransientAuthToken(null);
+    } else {
+      await storage.secureRemove(TOKEN_KEY);
+      setTransientAuthToken(r.token);
+    }
     setUser(r.user);
   };
 
-  const login = async (email: string, password: string) =>
-    save(await api("/auth/login", { method: "POST", body: { email, password } }));
+  const login = async (email: string, password: string, remember = true) =>
+    save(await api("/auth/login", { method: "POST", body: { email, password } }), remember);
+  const socialLogin: AuthCtx["socialLogin"] = async (provider, idToken, nonce, remember = true) =>
+    save(await api("/auth/social", { method: "POST", body: { provider, id_token: idToken, nonce } }), remember);
   const register = async (data: Record<string, unknown>) =>
     save(await api("/auth/register", { method: "POST", body: data }));
 
-  return <Ctx.Provider value={{ user, loading, login, register, logout, refresh, setUser }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ user, loading, login, socialLogin, register, logout, refresh, setUser }}>{children}</Ctx.Provider>;
 }
 
 export const useAuth = () => useContext(Ctx);

@@ -269,6 +269,7 @@ export default function Mapa() {
               <Txt variant="h2">{catOf(selected.category).label}</Txt>
             </View>
             <Txt style={{ marginVertical: S.md }}>{selected.description}</Txt>
+            {[selected.neighborhood, selected.locality, selected.region].filter(Boolean).length ? <Txt variant="label">{[selected.neighborhood, selected.locality, selected.region].filter(Boolean).join(" · ")}</Txt> : null}
             <Txt variant="small">{timeAgo(selected.created_at)} · local aproximado (~100 m) · moderado</Txt>
             <Btn testID="map-sheet-close" label="Fechar" variant="navy" onPress={() => setSelected(null)} style={{ marginTop: S.lg }} />
           </View>
