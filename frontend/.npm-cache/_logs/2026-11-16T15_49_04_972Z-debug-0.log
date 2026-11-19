@@ -1,0 +1,37 @@
+0 verbose cli C:\Program Files\nodejs\node.exe C:\Users\carlos.silva\AppData\Roaming\npm\node_modules\npm\bin\npm-cli.js
+1 info using npm@11.21.2
+2 info using node@v25.1.0
+3 silly config load:file:C:\Users\carlos.silva\AppData\Roaming\npm\node_modules\npm\npmrc
+4 silly config load:file:C:\Users\carlos.silva\Documents\Codex\2026-11-16\euq\work\copia-de-rota-segura\.npmrc
+5 silly config load:file:C:\Users\carlos.silva\.npmrc
+6 silly config load:file:C:\Users\carlos.silva\AppData\Roaming\npm\etc\npmrc
+7 verbose title npm exec yarn@1.22.22 --version
+8 verbose argv "exec" "--yes" "--" "yarn@1.22.22" "--version"
+9 verbose logfile logs-max:10 dir:C:\Users\carlos.silva\Documents\Codex\2026-11-16\euq\work\copia-de-rota-segura\frontend\.npm-cache\_logs\2026-11-16T15_49_04_972Z-
+10 verbose logfile C:\Users\carlos.silva\Documents\Codex\2026-11-16\euq\work\copia-de-rota-segura\frontend\.npm-cache\_logs\2026-11-16T15_49_04_972Z-debug-0.log
+11 silly logfile done cleaning log files
+12 silly packumentCache heap:2348810240 maxSize:587202560 maxEntrySize:293601280
+13 http fetch GET 200 https://registry.npmjs.org/yarn 325ms (cache miss)
+14 silly packumentCache heap:2348810240 maxSize:587202560 maxEntrySize:293601280
+15 silly packumentCache heap:2348810240 maxSize:587202560 maxEntrySize:293601280
+16 silly idealTree buildDeps
+17 silly fetch manifest yarn@1.22.22
+18 silly packumentCache full:https://registry.npmjs.org/yarn cache-miss
+19 http fetch GET 200 https://registry.npmjs.org/yarn 125ms (cache miss)
+20 silly packumentCache full:https://registry.npmjs.org/yarn set size:undefined disposed:false
+21 silly placeDep ROOT yarn@1.22.22 OK for:  want: 1.22.22
+22 silly reify moves {}
+23 silly audit bulk request { yarn: [ '1.22.22' ] }
+24 http cache yarn@https://registry.npmjs.org/yarn/-/yarn-1.22.22.tgz 1ms (cache hit)
+25 silly tarball no local data for yarn@https://registry.npmjs.org/yarn/-/yarn-1.22.22.tgz. Extracting by manifest.
+26 http fetch POST 200 https://registry.npmjs.org/-/npm/v1/security/advisories/bulk 479ms
+27 silly audit report {}
+28 http fetch GET 200 https://registry.npmjs.org/yarn/-/yarn-1.22.22.tgz 703ms (cache miss)
+29 info run yarn@1.22.22 preinstall node_modules/yarn :; (node ./preinstall.js > /dev/null 2>&1 || true)
+30 info run yarn@1.22.22 preinstall { code: 0, signal: null }
+31 verbose cwd C:\Users\carlos.silva\Documents\Codex\2026-11-16\euq\work\copia-de-rota-segura
+32 verbose os Windows_NT 10.0.19045
+33 verbose node v25.1.0
+34 verbose npm  v11.21.2
+35 verbose exit 0
+36 info ok

@@ -1,0 +1,16 @@
+0 verbose cli C:\Program Files\nodejs\node.exe C:\Users\carlos.silva\AppData\Roaming\npm\node_modules\npm\bin\npm-cli.js
+1 info using npm@11.21.2
+2 info using node@v25.1.0
+3 silly config load:file:C:\Users\carlos.silva\AppData\Roaming\npm\node_modules\npm\npmrc
+4 silly config load:file:C:\Users\carlos.silva\Documents\Codex\2026-11-16\euq\work\copia-de-rota-segura\.npmrc
+5 silly config load:file:C:\Users\carlos.silva\.npmrc
+6 silly config load:file:C:\Users\carlos.silva\AppData\Roaming\npm\etc\npmrc
+7 verbose title npm exec yarn@1.22.22 --cwd frontend add expo-auth-session@~58.0.18 expo-crypto@~58.0.8 expo-apple-authentication@~58.0.3 --ignore-scripts
+8 verbose argv "exec" "--yes" "--" "yarn@1.22.22" "--cwd" "frontend" "add" "expo-auth-session@~58.0.18" "expo-crypto@~58.0.8" "expo-apple-authentication@~58.0.3" "--ignore-scripts"
+9 verbose logfile logs-max:10 dir:C:\Users\carlos.silva\Documents\Codex\2026-11-16\euq\work\copia-de-rota-segura\frontend\.npm-cache\_logs\2026-11-16T15_50_25_589Z-
+10 verbose logfile C:\Users\carlos.silva\Documents\Codex\2026-11-16\euq\work\copia-de-rota-segura\frontend\.npm-cache\_logs\2026-11-16T15_50_25_589Z-debug-0.log
+11 silly logfile done cleaning log files
+12 silly packumentCache heap:2348810240 maxSize:587202560 maxEntrySize:293601280
+13 http fetch GET 200 https://registry.npmjs.org/yarn 251ms (cache revalidated)
+14 silly packumentCache heap:2348810240 maxSize:587202560 maxEntrySize:293601280
+15 silly packumentCache heap:2348810240 maxSize:587202560 maxEntrySize:293601280
