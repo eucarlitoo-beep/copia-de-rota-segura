@@ -1,6 +1,6 @@
 // Web map: OSM base layer with interactive alert pins and nearby-point clusters.
 import { useMemo, useState } from "react";
-import { LayoutChangeEvent, Linking, Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { LayoutChangeEvent, Linking, PanResponder, Pressable, ScrollView, StyleSheet, View } from "react-native";
 
 import { catOf, F, R, S } from "@/src/constants";
 import { Icon, Txt } from "@/src/components/ui";
@@ -24,12 +24,28 @@ export function RiskMap({ alerts, region, onSelect, routeCoordinates = [], match
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [zoom, setZoom] = useState(1);
   const [center, setCenter] = useState({ latitude: region.latitude, longitude: region.longitude });
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const latSpan = 0.06 / zoom;
   const minY = mercatorY(center.latitude - latSpan / 2);
   const maxY = mercatorY(center.latitude + latSpan / 2);
   const ySpan = maxY - minY;
   const lonSpan = size.height > 0 ? (ySpan * (size.width / size.height) * 180) / Math.PI : 0.1 / zoom;
   const bbox = `${center.longitude - lonSpan / 2},${center.latitude - latSpan / 2},${center.longitude + lonSpan / 2},${center.latitude + latSpan / 2}`;
+  const dragResponder = useMemo(() => PanResponder.create({
+    onStartShouldSetPanResponder: () => false,
+    onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dx) + Math.abs(gesture.dy) > 7,
+    onPanResponderMove: (_, gesture) => setDragOffset({ x: gesture.dx, y: gesture.dy }),
+    onPanResponderRelease: (_, gesture) => {
+      if (size.width && size.height) {
+        setCenter((point) => ({
+          longitude: point.longitude - (gesture.dx / size.width) * lonSpan,
+          latitude: Math.max(-85, Math.min(85, point.latitude - (gesture.dy / size.height) * latSpan)),
+        }));
+      }
+      setDragOffset({ x: 0, y: 0 });
+    },
+    onPanResponderTerminate: () => setDragOffset({ x: 0, y: 0 }),
+  }), [latSpan, lonSpan, size.height, size.width]);
 
   const pins = useMemo(() => {
     if (!size.width || !size.height) return [] as Pin[];
@@ -84,7 +100,8 @@ export function RiskMap({ alerts, region, onSelect, routeCoordinates = [], match
 
   return (
     <View style={[StyleSheet.absoluteFill, { backgroundColor: colors.surfaceTertiary }]} testID="risk-map">
-      <View style={s.mapArea} onLayout={onMapLayout}>
+      <View style={s.mapArea} onLayout={onMapLayout} {...dragResponder.panHandlers}>
+        <View style={[StyleSheet.absoluteFill, { transform: [{ translateX: dragOffset.x }, { translateY: dragOffset.y }] }]}>
         <iframe title="Mapa de alertas da Rota Segura" style={{ border: 0, width: "100%", height: "100%", pointerEvents: "none" }} src={`https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${center.latitude},${center.longitude}`} />
         <View style={StyleSheet.absoluteFill} pointerEvents="none">
           {lineSegments(routeCoordinates, colors.surface, 10)}
@@ -129,6 +146,7 @@ export function RiskMap({ alerts, region, onSelect, routeCoordinates = [], match
           <Pressable testID="map-pan-south" accessibilityLabel="Mover mapa para o sul" onPress={() => setCenter((point) => ({ ...point, latitude: point.latitude - latSpan * 0.3 }))} style={s.zoomButton}><Icon name="chevron-down" size={20} color={colors.brand} /></Pressable>
         </View>
         <View style={s.mapCount}><Txt style={s.mapCountText}>{alerts.length} alerta(s) no mapa</Txt></View>
+        </View>
       </View>
       <ScrollView style={s.list} contentContainerStyle={{ padding: S.md, gap: S.sm }}>
         {alerts.length === 0 ? <Txt variant="small">Nenhum alerta corresponde aos filtros selecionados.</Txt> : alerts.map((a) => (
@@ -146,7 +164,7 @@ export function RiskMap({ alerts, region, onSelect, routeCoordinates = [], match
 }
 
 const useStyles = makeStyles((c) => ({
-  mapArea: { flex: 1, position: "relative" },
+  mapArea: { flex: 1, position: "relative", overflow: "hidden" },
   list: { maxHeight: 220, backgroundColor: c.surface, borderTopLeftRadius: R.md, borderTopRightRadius: R.md },
   item: { flexDirection: "row", alignItems: "center", gap: S.sm, minHeight: 44, paddingHorizontal: S.md, borderRadius: R.sm, backgroundColor: c.surfaceSecondary },
   itemText: { flex: 1, fontFamily: F.medium, fontSize: 14, color: c.onSurface },
@@ -161,3 +179,4 @@ const useStyles = makeStyles((c) => ({
   mapCount: { position: "absolute", left: S.md, bottom: S.md, backgroundColor: c.surface, borderRadius: R.pill, paddingHorizontal: S.md, paddingVertical: S.xs, elevation: 3 },
   mapCountText: { fontFamily: F.semibold, fontSize: 12, color: c.onSurface },
 }));
+
