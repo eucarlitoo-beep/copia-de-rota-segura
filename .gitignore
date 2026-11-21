@@ -75,6 +75,7 @@ agenthub/agents/youtube/db
 
 # Build caches
 .cache/
+.npm-cache/
 
 memory/test_credentials.md
 
@@ -86,3 +87,4 @@ android-sdk/
 credentials.json
 *.key
 .credentials
+
