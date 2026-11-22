@@ -44,6 +44,7 @@ export default function Mapa() {
   const [destination, setDestination] = useState("");
   const [navigationBusy, setNavigationBusy] = useState(false);
   const [navigationMode, setNavigationMode] = useState(false);
+  const [mapControlsHidden, setMapControlsHidden] = useState(false);
   const [currentPosition, setCurrentPosition] = useState<MapPosition | null>(null);
   const [matchedGeometry, setMatchedGeometry] = useState<[number, number][]>([]);
   const [routeInfo, setRouteInfo] = useState<{ geometry: [number, number][]; distance: number; duration: number; steps: { name: string; type: string; modifier: string }[] } | null>(null);
@@ -198,11 +199,15 @@ export default function Mapa() {
       ) : (
         <View style={s.loading}><ActivityIndicator color={colors.brand} size="large" /><Txt>Carregando mapa...</Txt></View>
       )}
+      {!mapControlsHidden ? (
       <View style={[s.top, { top: insets.top + S.sm }]} pointerEvents="box-none">
         <View style={s.titleCard}>
           <Icon name="map" size={20} color={colors.brandPrimary} />
           <Txt style={s.title}>Mapa de riscos</Txt>
           <Txt testID="map-alert-count" style={s.count}>{visibleAlerts.length} alerta(s)</Txt>
+          <Pressable testID="map-controls-toggle" accessibilityRole="button" accessibilityLabel="Ocultar controles do mapa" accessibilityState={{ expanded: true }} onPress={() => setMapControlsHidden(true)} style={s.inlineToggle}>
+            <Icon name="chevron-up" size={20} color={colors.brand} />
+          </Pressable>
         </View>
         <View style={s.filterCard}>
           <View style={s.filterHeader}>
@@ -250,6 +255,13 @@ export default function Mapa() {
           />
         ) : null}
       </View>
+      ) : null}
+      {mapControlsHidden ? (
+        <Pressable testID="map-controls-toggle" accessibilityRole="button" accessibilityLabel="Mostrar controles do mapa" accessibilityState={{ expanded: false }} onPress={() => setMapControlsHidden(false)} style={[s.controlsToggle, { top: insets.top + S.sm }]}>
+          <Icon name="chevron-down" size={21} color={colors.brand} />
+          <Txt style={s.controlsToggleText}>Mostrar</Txt>
+        </Pressable>
+      ) : null}
       <View style={[s.fabs, { bottom: bottomChrome + S.lg }]}>
         {perm.granted ? (
           <Pressable testID="map-locate-button" accessibilityLabel="Minha localização" onPress={locate} style={s.fabSmall}>
@@ -304,6 +316,9 @@ const useStyles = makeStyles((c) => ({
   place: { alignSelf: "flex-start", backgroundColor: c.surface, borderRadius: R.pill, paddingHorizontal: S.md, paddingVertical: S.sm, fontFamily: F.semibold, color: c.brand, fontSize: 12 },
   changeCity: { alignSelf: "flex-end", backgroundColor: c.surface, borderRadius: R.pill, paddingHorizontal: S.md, paddingVertical: S.sm, fontFamily: F.bold, color: c.brand, fontSize: 13 },
   top: { position: "absolute", left: S.lg, right: S.lg, gap: S.sm },
+  controlsToggle: { position: "absolute", right: S.lg, zIndex: 20, flexDirection: "row", alignItems: "center", gap: S.xs, minHeight: 42, paddingHorizontal: S.md, borderRadius: R.pill, backgroundColor: c.surface, shadowColor: c.brand, shadowOpacity: 0.18, shadowRadius: 8, elevation: 6 },
+  controlsToggleText: { fontFamily: F.bold, fontSize: 12, color: c.brand },
+  inlineToggle: { width: 32, height: 32, alignItems: "center", justifyContent: "center", borderRadius: R.pill, backgroundColor: c.surfaceSecondary },
   titleCard: { flexDirection: "row", alignItems: "center", gap: S.sm, backgroundColor: c.surface, borderRadius: R.md, paddingHorizontal: S.lg, minHeight: 52, shadowColor: c.brand, shadowOpacity: 0.12, shadowRadius: 10, elevation: 4 },
   filterCard: { backgroundColor: c.surface, borderRadius: R.md, padding: S.sm, gap: S.xs, shadowColor: c.brand, shadowOpacity: 0.12, shadowRadius: 10, elevation: 4 },
   filterHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: S.xs },
