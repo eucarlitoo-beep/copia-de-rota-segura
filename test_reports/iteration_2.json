@@ -1,0 +1,44 @@
+{
+  "summary": "Tested password-reset emails, reset HTML page/confirm, Emergent Google session, Google redirect, WhatsApp share, payments 503, and regression of register/forgot/plans. Found one CRITICAL bug and fixed it: POST /api/auth/password-reset/request returned 500 (TypeError: naive vs aware datetime) on any repeat request for an email that already had a reset record, including delivered@resend.dev. After the fix, all 14 backend tests pass. The email API returned 202 Accepted for a first-time resend.dev address; admin@rotasegura.com returns 422 'undeliverable recipient', which is expected for test data. Frontend: admin login lands in tabs. The Google button is enabled and redirects to auth.emergentagent.com/?redirect=<origin>/ (Google sign-in page shown). On /share with geolocation granted, the share is created, share-whatsapp-button appears and opens https://wa.me/?text=<encoded message + link>. Plans subscribe shows the 'Pagamentos ainda não configurados' toast. No deprecated expo packages detected.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "POST /api/auth/password-reset/request", "issue": "500 TypeError: can't subtract offset-naive and offset-aware datetimes (server.py:277). Motor returns naive datetimes but now() is tz-aware, so any second request for a registered email crashed. FIXED by T1: normalize created_at to UTC before comparing.", "priority": "CRITICAL"}
+    ],
+    "minor": [
+      {"endpoint": "GET /api/public/reset-password", "issue": "The token is put into an inline JS string using HTML escape(). A backslash in the token would break the JS. Use json.dumps(token) for the JS context instead."},
+      {"endpoint": "POST /api/auth/session", "issue": "auth_providers stores sub=email instead of the Google user id. New Google users get lgpd_consent_at set without an explicit consent step (only a small notice on the login screen)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "share.tsx", "issue": "If location permission is not granted, only the PermissionCard renders, even when a share is already active. The user cannot see or stop the active share (share-stop-button is not reachable). Reproduced: active share + no geolocation permission = permission card only. Show share-active-card / stop even without permission (share.tsx:124-132).", "testID": "share-stop-button", "priority": "MEDIUM"},
+      {"component": "login.tsx", "issue": "One `loading` state is shared by the Entrar and Google buttons, so both show a spinner during either flow.", "testID": "login-google-button", "priority": "LOW"}
+    ],
+    "integration_issues": [
+      {"flow": "Web Google return (auth.tsx:76-88)", "issue": "If the /auth/session exchange fails, the error is caught silently and the user lands on login with no error message. Surface a message.", "affected_testIDs": ["login-error"]}
+    ],
+    "design_issues": [
+      {"screen": "share / plans", "issues": ["Toast renders over the ScreenHeader title (overlaps the back button/title while visible)."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_auth_reset_google_iter2.py", "/app/test_reports/pytest/pytest_iter2.xml"],
+  "action_items": [
+    "Review the T1 fix in server.py request_password_reset (tz normalization), or create the Motor client with tz_aware=True globally. Check other datetime fields read from Mongo.",
+    "share.tsx: allow viewing/stopping an active share when location permission is denied.",
+    "auth.tsx: show an error when the web Google session exchange fails.",
+    "Reset page: use json.dumps for the token in the inline script.",
+    "server.py is ~1800 lines: split it into routers/modules."
+  ],
+  "critical_code_review_comments": [
+    "Mixed datetime storage (ISO strings in most collections, BSON datetimes in password_resets) without tz_aware=True caused the 500.",
+    "Google login is not verifiable end-to-end by automation; only the redirect was verified."
+  ],
+  "updated_files": ["/app/backend/server.py", "/app/backend/tests/test_auth_reset_google_iter2.py"],
+  "success_rate": {"backend": "100% after fix (12/14 before fix)", "frontend": "100% of requested flows"},
+  "seed_data_creation": "Created TEST_ users delivered+test<hex>@resend.dev; deleted by id afterwards. Started and then stopped one share on the admin account.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Env key is EXPO_PUBLIC_BACKEND_URL. Use delivered+<label>@resend.dev for reset emails (2-min resend window per email). Checkout needs plan_id (premium_mensal/premium_anual) and returns 503 without STRIPE_API_KEY. /share needs geolocation permission granted in the Playwright context.",
+  "rca_of_issue": "Repro: POST /api/auth/password-reset/request twice with the same registered email -> second call 500. Root cause: created_at is stored as a BSON datetime and read back naive; now() is aware; subtracting them raises TypeError. Mitigation: replace(tzinfo=utc) before the comparison (applied)."
+}

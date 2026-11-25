@@ -1,4 +1,5 @@
-import { createContext, PropsWithChildren, useCallback, useContext, useEffect, useState } from "react";
+import { createContext, PropsWithChildren, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { Platform } from "react-native";
 
 import { api, setTransientAuthToken, setUnauthorizedHandler, TOKEN_KEY } from "@/src/api";
 import { storage } from "@/src/utils/storage";
@@ -21,8 +22,10 @@ export type User = {
 type AuthCtx = {
   user: User | null;
   loading: boolean;
+  authError: string;
   login: (email: string, password: string, remember?: boolean) => Promise<void>;
   socialLogin: (provider: "google" | "apple", idToken: string, nonce: string, remember?: boolean) => Promise<void>;
+  googleSession: (sessionId: string, remember?: boolean) => Promise<void>;
   register: (data: Record<string, unknown>) => Promise<void>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
@@ -31,9 +34,14 @@ type AuthCtx = {
 
 const Ctx = createContext<AuthCtx>({} as AuthCtx);
 
+// Um session_id do Google só pode ser trocado uma vez.
+const usedSessionIds = new Set<string>();
+export const extractSessionId = (url: string | null | undefined) => url?.match(/[?#&]session_id=([^&#]+)/)?.[1] ?? null;
+
 export function AuthProvider({ children }: PropsWithChildren) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [authError, setAuthError] = useState("");
 
   const logout = useCallback(async () => {
     const pushToken = await storage.secureGet("push_token", null as string | null);
@@ -64,6 +72,23 @@ export function AuthProvider({ children }: PropsWithChildren) {
       logout();
     });
     (async () => {
+      // Web: retorno do login Google (Emergent) chega como #session_id=... na URL.
+      if (Platform.OS === "web" && typeof window !== "undefined") {
+        const sid = extractSessionId(window.location.href);
+        if (sid) {
+          try {
+            await googleSessionRef.current(sid);
+            const url = new URL(window.location.href);
+            url.searchParams.delete("session_id");
+            url.hash = url.hash.replace(/[#&]?session_id=[^&]*/, "");
+            window.history.replaceState(window.history.state, "", url.toString());
+            setLoading(false);
+            return;
+          } catch (e) {
+            setAuthError(e instanceof Error ? e.message : "Não foi possível concluir o acesso Google.");
+          }
+        }
+      }
       const token = await storage.secureGet(TOKEN_KEY, null as string | null);
       setTransientAuthToken(null);
       if (token) {
@@ -92,8 +117,15 @@ export function AuthProvider({ children }: PropsWithChildren) {
     save(await api("/auth/social", { method: "POST", body: { provider, id_token: idToken, nonce } }), remember);
   const register = async (data: Record<string, unknown>) =>
     save(await api("/auth/register", { method: "POST", body: data }));
+  const googleSession = async (sessionId: string, remember = true) => {
+    if (usedSessionIds.has(sessionId)) return;
+    usedSessionIds.add(sessionId);
+    await save(await api("/auth/session", { method: "POST", body: { session_id: sessionId } }), remember);
+  };
+  const googleSessionRef = useRef(googleSession);
+  googleSessionRef.current = googleSession;
 
-  return <Ctx.Provider value={{ user, loading, login, socialLogin, register, logout, refresh, setUser }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ user, loading, authError, login, socialLogin, googleSession, register, logout, refresh, setUser }}>{children}</Ctx.Provider>;
 }
 
 export const useAuth = () => useContext(Ctx);

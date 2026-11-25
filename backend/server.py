@@ -5,6 +5,7 @@ para facilitar a migração futura para Supabase/Postgres (ver /app/docs/ARQUITE
 """
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import re
@@ -274,11 +275,14 @@ async def request_password_reset(body: PasswordResetRequestIn):
     if user:
         email_key = hashlib.sha256(email.encode("utf-8")).hexdigest()
         existing = await db.password_resets.find_one({"email_key": email_key}, {"_id": 0, "created_at": 1})
-        recent = existing and existing.get("created_at") and now() - existing["created_at"] < timedelta(minutes=2)
+        created = (existing or {}).get("created_at")
+        if created and created.tzinfo is None:  # Motor returns naive UTC datetimes
+            created = created.replace(tzinfo=timezone.utc)
+        recent = bool(created) and now() - created < timedelta(minutes=2)
         if not recent:
             token = secrets.token_urlsafe(32)
             created_at = now()
-            link = f"{os.environ.get('PUBLIC_APP_URL', 'rotasegura://reset-password')}?token={quote(token)}"
+            link = f"{os.environ['PUBLIC_BASE_URL'].rstrip('/')}/api/public/reset-password?token={quote(token)}"
             await db.password_resets.update_one(
                 {"email_key": email_key},
                 {"$set": {"email_key": email_key, "user_id": user["id"], "token_hash": hashlib.sha256(token.encode()).hexdigest(),
@@ -351,6 +355,64 @@ async def social_login(body: SocialLoginIn):
     if linked.get("blocked"):
         raise HTTPException(403, "Conta suspensa. Fale com o suporte.")
     return {"token": make_token(linked["id"], linked.get("auth_version", 0)), "user": public_user(linked)}
+
+
+class GoogleSessionIn(BaseModel):
+    session_id: str = Field(min_length=8, max_length=512)
+
+
+@api.post("/auth/session")
+async def google_session(body: GoogleSessionIn):
+    """Login Google gerenciado pela Emergent: troca o session_id (uso único) pelo token do app."""
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get("https://api.emergent.sh/auth/v1/env/oauth/session-data",
+                                    headers={"X-Session-ID": body.session_id})
+    except httpx.HTTPError:
+        raise HTTPException(502, "Não foi possível falar com o Google agora. Tente novamente.")
+    if resp.status_code != 200:
+        raise HTTPException(401, "Acesso Google inválido ou expirado. Tente novamente.")
+    data = resp.json()
+    email = (data.get("email") or "").strip().lower()
+    if not email:
+        raise HTTPException(401, "O Google não informou o e-mail da conta.")
+    u = await db.users.find_one({"email": email}, {"_id": 0})
+    if not u:
+        u = {"id": new_id(), "name": (data.get("name") or email.split("@")[0])[:80], "email": email,
+             "password_hash": hash_pw(secrets.token_urlsafe(32)), "auth_version": 0, "phone": "",
+             "driver_type": "aplicativo", "vehicle": "", "city": "", "role": "user", "plan": "gratuito",
+             "plan_expires_at": None, "blocked": False, "lgpd_consent_at": iso(now()), "location_consent": False,
+             "picture": data.get("picture", ""), "auth_providers": [{"provider": "google", "sub": email}],
+             "created_at": iso(now())}
+        try:
+            await db.users.insert_one(u)
+        except DuplicateKeyError:
+            u = await db.users.find_one({"email": email}, {"_id": 0})
+        else:
+            await notify(u["id"], "Bem-vindo ao ROTA SEGURA", "Cadastre seus contatos de confiança para usar o SOS.")
+    if u.get("blocked"):
+        raise HTTPException(403, "Conta suspensa. Fale com o suporte.")
+    return {"token": make_token(u["id"], u.get("auth_version", 0)), "user": public_user(u)}
+
+
+@api.get("/public/reset-password", response_class=HTMLResponse)
+async def reset_password_page(token: str = ""):
+    app_link = f"{os.environ.get('PUBLIC_APP_URL', 'rotasegura://reset-password')}?token={quote(token)}"
+    t = json.dumps(token).replace("<", "\\u003c")
+    return HTMLResponse(
+        '<html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>ROTA SEGURA - Nova senha</title></head>'
+        '<body style="font-family:Arial,sans-serif;margin:0;padding:24px;background:#F4F5F7;color:#111827">'
+        '<h2 style="color:#0B2545">ROTA SEGURA</h2><p>Crie sua nova senha (mínimo 8 caracteres).</p>'
+        '<input id="p1" type="password" placeholder="Nova senha" style="width:100%;padding:14px;border-radius:12px;border:1px solid #ccc;margin-bottom:12px;font-size:16px">'
+        '<input id="p2" type="password" placeholder="Confirme a nova senha" style="width:100%;padding:14px;border-radius:12px;border:1px solid #ccc;margin-bottom:12px;font-size:16px">'
+        '<button id="b" style="width:100%;background:#FF6B35;color:#fff;border:0;padding:14px;border-radius:12px;font-weight:bold;font-size:16px">Salvar nova senha</button>'
+        '<p id="m" style="font-weight:bold"></p>'
+        f'<p style="font-size:14px">Tem o app instalado? <a href="{escape(app_link, quote=True)}">Abrir no app</a></p>'
+        '<script>document.getElementById("b").onclick=async function(){var a=document.getElementById("p1").value,c=document.getElementById("p2").value,m=document.getElementById("m");'
+        'if(a.length<8){m.textContent="A senha precisa ter pelo menos 8 caracteres.";return}if(a!==c){m.textContent="As senhas não conferem.";return}'
+        f'var r=await fetch("/api/auth/password-reset/confirm",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify({{token:{t},password:a}})}});'
+        'var d=await r.json().catch(function(){return{}});m.textContent=d.message||d.detail||"Algo deu errado.";if(r.ok){this.disabled=true}}</script>'
+        '</body></html>')
 
 
 @api.get("/auth/me")

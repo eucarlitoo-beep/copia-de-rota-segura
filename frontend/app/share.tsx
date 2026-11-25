@@ -1,7 +1,7 @@
 import * as Clipboard from "expo-clipboard";
 import * as Location from "expo-location";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Pressable, ScrollView, Share, View } from "react-native";
+import { Linking, Pressable, ScrollView, Share, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { api, BACKEND_URL, errMsg } from "@/src/api";
@@ -67,6 +67,7 @@ export default function ShareScreen() {
   }, [share, perm.granted, startWatch]);
 
   const link = share ? `${BACKEND_URL}/api/public/share/${share.token}` : "";
+  const shareMessage = `${user?.name.split(" ")[0]} está compartilhando a localização em tempo real pelo ROTA SEGURA: ${link}`;
 
   const start = async () => {
     setBusy(true);
@@ -97,7 +98,16 @@ export default function ShareScreen() {
   };
 
   const send = () =>
-    Share.share({ message: `${user?.name.split(" ")[0]} está compartilhando a localização em tempo real pelo ROTA SEGURA: ${link}` }).catch(() => {});
+    Share.share({ message: shareMessage }).catch(() => {});
+
+  const sendWhatsApp = async () => {
+    const url = `https://wa.me/?text=${encodeURIComponent(shareMessage)}`;
+    try {
+      await Linking.openURL(url);
+    } catch {
+      toast("Não foi possível abrir o WhatsApp. Use \"Enviar link\".", "error");
+    }
+  };
 
   const copy = async () => {
     await Clipboard.setStringAsync(link);
@@ -111,7 +121,7 @@ export default function ShareScreen() {
       <ScreenHeader title="Compartilhar localização" />
       <ScrollView contentContainerStyle={{ padding: S.lg, gap: S.lg, paddingBottom: insets.bottom + S.xl }}>
         {!online ? <Banner testID="share-offline-banner" text="Sem internet. O link não será atualizado até a conexão voltar." /> : null}
-        {!perm.loaded ? null : !perm.granted ? (
+        {!perm.loaded ? null : !perm.granted && !share ? (
           <PermissionCard
             testID="share-permission-card"
             title="Permitir localização"
@@ -126,7 +136,8 @@ export default function ShareScreen() {
             <Txt variant="small">Expira em {fmtDate(share.expires_at)}</Txt>
             {lastSent ? <Txt variant="small">Última atualização enviada: {fmtDate(lastSent)}</Txt> : null}
             <View style={{ gap: S.sm, marginTop: S.lg }}>
-              <Btn testID="share-send-button" label="Enviar link" icon="share-social" onPress={send} />
+              <Btn testID="share-whatsapp-button" label="Enviar pelo WhatsApp" icon="logo-whatsapp" onPress={sendWhatsApp} />
+              <Btn testID="share-send-button" label="Enviar link" icon="share-social" variant="outline" onPress={send} />
               <Btn testID="share-copy-button" label="Copiar link" icon="copy" variant="outline" onPress={copy} />
               <Btn testID="share-stop-button" label="Parar de compartilhar" icon="stop-circle" variant="danger" onPress={stop} />
             </View>

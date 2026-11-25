@@ -1,53 +1,36 @@
 import { useRouter } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import { Platform, Pressable, View } from "react-native";
-import * as AuthSession from "expo-auth-session";
 import * as AppleAuthentication from "expo-apple-authentication";
 import * as Crypto from "expo-crypto";
+import * as Linking from "expo-linking";
 import * as WebBrowser from "expo-web-browser";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { errMsg } from "@/src/api";
-import { useAuth } from "@/src/auth";
+import { extractSessionId, useAuth } from "@/src/auth";
 import { F, R, S } from "@/src/constants";
 import { Btn, Field, Icon, Txt } from "@/src/components/ui";
 import { makeStyles, useTheme } from "@/src/theme";
 
 WebBrowser.maybeCompleteAuthSession();
 
-const googleClientId = Platform.OS === "ios"
-  ? process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID
-  : Platform.OS === "android"
-    ? process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID
-    : process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
-const googleDiscovery = {
-  authorizationEndpoint: "https://accounts.google.com/o/oauth2/v2/auth",
-  tokenEndpoint: "https://oauth2.googleapis.com/token",
-};
+const EMERGENT_AUTH_URL = "https://auth.emergentagent.com";
 
 export default function Login() {
   const s = useStyles();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { login, socialLogin } = useAuth();
+  const { login, socialLogin, googleSession, authError } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
+  const [error, setError] = useState(authError);
   const [loading, setLoading] = useState(false);
   const [remember, setRemember] = useState(true);
   const [appleAvailable, setAppleAvailable] = useState(false);
   const nonce = useMemo(() => Crypto.randomUUID(), []);
-  const redirectUri = AuthSession.makeRedirectUri({ scheme: "rotasegura", path: "oauth" });
-  const [googleRequest, , promptGoogleAsync] = AuthSession.useAuthRequest({
-    clientId: googleClientId,
-    redirectUri,
-    responseType: AuthSession.ResponseType.Code,
-    scopes: ["openid", "email", "profile"],
-    usePKCE: true,
-    extraParams: { prompt: "select_account", nonce },
-  }, googleDiscovery);
 
   useEffect(() => {
     if (Platform.OS === "ios") AppleAuthentication.isAvailableAsync().then(setAppleAvailable).catch(() => setAppleAvailable(false));
@@ -55,24 +38,24 @@ export default function Login() {
 
   const signInGoogle = async () => {
     setError("");
-    if (!googleClientId) return setError("Login Google ainda não está configurado neste app.");
-    if (!googleRequest) return setError("Aguarde a inicialização do acesso Google e tente novamente.");
+    if (Platform.OS === "web") {
+      const redirect = window.location.origin + "/";
+      window.location.href = `${EMERGENT_AUTH_URL}/?redirect=${encodeURIComponent(redirect)}`;
+      return;
+    }
+    const redirect = Linking.createURL("");
+    let captured: string | null = null;
+    const sub = Linking.addEventListener("url", ({ url }) => { if (extractSessionId(url)) captured = url; });
     setLoading(true);
     try {
-      const result = await promptGoogleAsync();
-      if (result.type === "cancel" || result.type === "dismiss") return;
-      if (result.type !== "success" || !result.params.code || !googleRequest.codeVerifier) throw new Error("Não foi possível concluir o acesso Google.");
-      const tokens = await AuthSession.exchangeCodeAsync({
-        clientId: googleClientId,
-        code: result.params.code,
-        redirectUri,
-        extraParams: { code_verifier: googleRequest.codeVerifier },
-      }, googleDiscovery);
-      if (!tokens.idToken) throw new Error("O Google não retornou uma identidade verificável.");
-      await socialLogin("google", tokens.idToken, nonce, remember);
+      const result = await WebBrowser.openAuthSessionAsync(`${EMERGENT_AUTH_URL}/?redirect=${encodeURIComponent(redirect)}`, redirect);
+      const url = (result.type === "success" ? result.url : null) ?? captured ?? await Linking.getInitialURL();
+      const sid = extractSessionId(url);
+      if (!sid) return;
+      await googleSession(sid, remember);
       router.replace("/(tabs)");
     } catch (e) { setError(errMsg(e)); }
-    finally { setLoading(false); }
+    finally { sub.remove(); setLoading(false); }
   };
 
   const signInApple = async () => {
@@ -129,8 +112,8 @@ export default function Login() {
           {error ? <Txt testID="login-error" style={s.error}>{error}</Txt> : null}
           <Btn testID="login-submit-button" label="Entrar" onPress={submit} loading={loading} />
           <View style={s.divider}><View style={s.rule} /><Txt variant="small">ou continue com</Txt><View style={s.rule} /></View>
-          <Btn testID="login-google-button" label="Continuar com Google" icon="logo-google" variant="outline" onPress={signInGoogle} loading={loading} disabled={!googleClientId || !googleRequest} />
-          {!googleClientId ? <Txt variant="small" style={s.providerHelp}>Configure os Client IDs OAuth do Google para habilitar este acesso.</Txt> : null}
+          <Btn testID="login-google-button" label="Continuar com Google" icon="logo-google" variant="outline" onPress={signInGoogle} loading={loading} />
+          <Txt variant="small" style={s.providerHelp}>Ao continuar com Google, você aceita a Política de Privacidade (LGPD).</Txt>
           {appleAvailable ? <AppleAuthentication.AppleAuthenticationButton
             testID="login-apple-button"
             buttonType={AppleAuthentication.AppleAuthenticationButtonType.CONTINUE}
