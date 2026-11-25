@@ -6,6 +6,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { api, BACKEND_URL, errMsg } from "@/src/api";
 import { useAuth } from "@/src/auth";
+import { backgroundSupported, startBackgroundShare, stopBackgroundShare } from "@/src/backgroundShare";
 import { F, R, S } from "@/src/constants";
 import { Banner, Btn, Card, Icon, PermissionCard, ScreenHeader, Txt, useToast } from "@/src/components/ui";
 import { FAILURE_TEXT, getCurrentCoords, LocFailure, useLocationPermission } from "@/src/location";
@@ -28,6 +29,7 @@ export default function ShareScreen() {
   const [busy, setBusy] = useState(false);
   const [gpsErr, setGpsErr] = useState<LocFailure | null>(null);
   const [lastSent, setLastSent] = useState<string | null>(null);
+  const [bgState, setBgState] = useState<"off" | "on" | "blocked">("off");
   const watch = useRef<Location.LocationSubscription | null>(null);
 
   useEffect(() => {
@@ -89,9 +91,31 @@ export default function ShareScreen() {
     setBusy(false);
   };
 
+  // Pede a permissão "sempre" só depois que o usuário escolheu compartilhar.
+  const enableBackground = async () => {
+    if (!share) return;
+    const cur = await Location.getBackgroundPermissionsAsync();
+    if (!cur.granted && !cur.canAskAgain) return Linking.openSettings();
+    const res = cur.granted ? cur : await Location.requestBackgroundPermissionsAsync();
+    if (!res.granted) {
+      setBgState(res.canAskAgain ? "off" : "blocked");
+      return toast("Sem a permissão \"Permitir sempre\", a posição só atualiza com esta tela aberta.", "info");
+    }
+    const ok = await startBackgroundShare(share.id).catch(() => false);
+    setBgState(ok ? "on" : "off");
+    if (ok) toast("Atualização com a tela bloqueada ativada.", "success");
+  };
+
+  useEffect(() => {
+    if (!share || !backgroundSupported) return;
+    startBackgroundShare(share.id).then((ok) => setBgState(ok ? "on" : "off")).catch(() => {});
+  }, [share]);
+
   const stop = async () => {
     if (!share) return;
     stopWatch();
+    await stopBackgroundShare();
+    setBgState("off");
     await api(`/share/${share.id}`, { method: "DELETE" }).catch(() => {});
     setShare(null);
     toast("Compartilhamento encerrado.", "info");
@@ -141,9 +165,20 @@ export default function ShareScreen() {
               <Btn testID="share-copy-button" label="Copiar link" icon="copy" variant="outline" onPress={copy} />
               <Btn testID="share-stop-button" label="Parar de compartilhar" icon="stop-circle" variant="danger" onPress={stop} />
             </View>
-            <Txt variant="small" style={{ marginTop: S.md }}>
-              Mantenha esta tela aberta para atualizar a posição. A atualização em segundo plano estará disponível na versão instalada (próxima etapa).
-            </Txt>
+            {!backgroundSupported ? (
+              <Txt testID="share-bg-unsupported" variant="small" style={{ marginTop: S.md }}>
+                Aqui (prévia/Expo Go) a posição só atualiza com esta tela aberta. Na versão instalada do app ela continua atualizando com a tela bloqueada.
+              </Txt>
+            ) : bgState === "on" ? (
+              <Txt testID="share-bg-on" variant="small" style={{ marginTop: S.md, color: colors.success }}>
+                Atualizando também com a tela bloqueada. Uma notificação fica visível enquanto o compartilhamento estiver ativo.
+              </Txt>
+            ) : (
+              <View style={{ marginTop: S.md, gap: S.sm }}>
+                <Txt variant="small">Para continuar atualizando com a tela bloqueada, permita a localização "o tempo todo". Ela só é usada enquanto o compartilhamento estiver ativo.</Txt>
+                <Btn testID="share-bg-enable-button" label={bgState === "blocked" ? "Abrir configurações" : "Ativar com a tela bloqueada"} icon="lock-closed" variant="outline" onPress={bgState === "blocked" ? () => Linking.openSettings() : enableBackground} />
+              </View>
+            )}
           </Card>
         ) : (
           <Card testID="share-start-card">

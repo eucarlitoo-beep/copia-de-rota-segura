@@ -2,6 +2,7 @@ import { createContext, PropsWithChildren, useCallback, useContext, useEffect, u
 import { Platform } from "react-native";
 
 import { api, setTransientAuthToken, setUnauthorizedHandler, TOKEN_KEY } from "@/src/api";
+import { stopBackgroundShare } from "@/src/backgroundShare";
 import { storage } from "@/src/utils/storage";
 
 export type User = {
@@ -54,6 +55,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       clearTimeout(timeout!);
       await storage.secureRemove("push_token");
     }
+    await stopBackgroundShare().catch(() => {});
     await storage.secureRemove(TOKEN_KEY);
     setTransientAuthToken(null);
     setUser(null);

@@ -7,6 +7,7 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 
 import { AuthProvider } from "@/src/auth";
+import "@/src/backgroundShare"; // registra a tarefa de localização em segundo plano no início do app
 import { ErrorBoundary } from "@/src/components/error-boundary";
 import { ToastProvider } from "@/src/components/ui";
 import { queryClient } from "@/src/query-client";

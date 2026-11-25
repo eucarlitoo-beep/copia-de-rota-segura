@@ -12,7 +12,11 @@
       "usesAppleSignIn": true,
       "bundleIdentifier": "com.emergent.sosrota.lnw5zv",
       "infoPlist": {
-        "NSLocationWhenInUseUsageDescription": "Envie sua localização no SOS e veja riscos próximos"
+        "NSLocationWhenInUseUsageDescription": "Envie sua localização no SOS e veja riscos próximos",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Atualize sua localização compartilhada com a tela bloqueada",
+        "UIBackgroundModes": [
+          "location"
+        ]
       }
     },
     "android": {
@@ -23,7 +27,10 @@
       "package": "com.emergent.sosrota.lnw5zv",
       "permissions": [
         "ACCESS_COARSE_LOCATION",
-        "ACCESS_FINE_LOCATION"
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION"
       ]
     },
     "web": {
@@ -53,7 +60,11 @@
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "Envie sua localização no SOS e veja riscos próximos"
+          "locationWhenInUsePermission": "Envie sua localização no SOS e veja riscos próximos",
+          "locationAlwaysAndWhenInUsePermission": "Atualize sua localização compartilhada com a tela bloqueada",
+          "isIosBackgroundLocationEnabled": true,
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
         }
       ],
       [

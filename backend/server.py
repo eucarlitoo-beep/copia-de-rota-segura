@@ -700,6 +700,60 @@ async def sos_email(iid: str, u: dict = Depends(current_user)):
     return {"sent": sent, "total": len(contacts)}
 
 
+def whatsapp_number(phone: str) -> str:
+    d = re.sub(r"\D", "", phone or "")
+    return f"+55{d}" if len(d) <= 11 else f"+{d}"
+
+
+async def send_whatsapp(to: str, body: str, variables: dict) -> None:
+    sid, token = os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"]
+    data = {"From": f"whatsapp:{os.environ['TWILIO_WHATSAPP_FROM']}", "To": f"whatsapp:{to}"}
+    content_sid = os.environ.get("TWILIO_WHATSAPP_CONTENT_SID")
+    if content_sid:  # modelo aprovado pelo WhatsApp (necessário em produção)
+        data.update({"ContentSid": content_sid, "ContentVariables": json.dumps(variables)})
+    else:
+        data["Body"] = body
+    async with httpx.AsyncClient(timeout=15) as session:
+        resp = await session.post(f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json", data=data, auth=(sid, token))
+    if resp.status_code >= 300:
+        logger.warning("Twilio WhatsApp failed (%s): %s", resp.status_code, resp.text[:300])
+        raise HTTPException(502, "Falha no envio pelo WhatsApp")
+
+
+@api.post("/sos/{iid}/whatsapp")
+async def sos_whatsapp(iid: str, u: dict = Depends(current_user)):
+    """Envia o alerta de SOS pelo WhatsApp a todos os contatos, direto do servidor (Twilio)."""
+    inc = await db.incidents.find_one({"id": iid, "user_id": u["id"]}, {"_id": 0})
+    if not inc:
+        raise HTTPException(404, "Ocorrência não encontrada")
+    if not (os.environ.get("TWILIO_ACCOUNT_SID") and os.environ.get("TWILIO_AUTH_TOKEN") and os.environ.get("TWILIO_WHATSAPP_FROM")):
+        raise HTTPException(503, "Envio automático pelo WhatsApp ainda não configurado. Use os botões de WhatsApp abaixo.")
+    if any(a["action"] == "whatsapp_auto" for a in inc.get("actions", [])):
+        raise HTTPException(409, "Alerta pelo WhatsApp já enviado para esta ocorrência")
+    since = iso(now() - timedelta(hours=1))
+    recent = await db.incidents.count_documents({"user_id": u["id"], "actions": {"$elemMatch": {"action": "whatsapp_auto", "at": {"$gte": since}}}})
+    if recent >= 3:
+        raise HTTPException(429, "Limite de envios por hora atingido. Use os botões de WhatsApp ou ligue 190.")
+    contacts = await db.contacts.find({"user_id": u["id"], "phone": {"$nin": [None, ""]}}, {"_id": 0}).to_list(10)
+    if not contacts:
+        raise HTTPException(400, "Nenhum contato com telefone cadastrado")
+    link = maps_link(inc.get("lat"), inc.get("lng")) or "localização indisponível"
+    when = datetime.fromisoformat(inc["created_at"]).astimezone(timezone(timedelta(hours=-3))).strftime("%H:%M")
+    body = (f"SOS - ROTA SEGURA: {u['name']} acionou o pedido de ajuda às {when}. Localização: {link} "
+            f"Tente contato agora. Se não conseguir falar e houver risco, ligue 190.")
+    sent = 0
+    for c in contacts:
+        try:
+            await send_whatsapp(whatsapp_number(c["phone"]), body, {"1": u["name"], "2": when, "3": link})
+            sent += 1
+        except Exception as exc:
+            logger.warning("SOS WhatsApp to contact failed: %s", exc)
+    await db.incidents.update_one({"id": iid}, {"$push": {"actions": {"action": "whatsapp_auto", "at": iso(now()), "sent": sent}}})
+    if not sent:
+        raise HTTPException(502, "Não foi possível enviar pelo WhatsApp agora. Use os botões abaixo ou ligue 190.")
+    return {"sent": sent, "total": len(contacts)}
+
+
 @api.get("/incidents")
 async def incidents(u: dict = Depends(current_user)):
     sos = await db.incidents.find({"user_id": u["id"]}, {"_id": 0}).sort("created_at", -1).to_list(200)
@@ -1561,6 +1615,10 @@ class CheckoutIn(BaseModel):
     plan_id: str
 
 
+TRIAL_DAYS = 7
+PAYMENT_SYNC_SECONDS = 60
+
+
 def stripe_ready():
     key = os.environ.get("STRIPE_API_KEY")
     if not key:
@@ -1573,12 +1631,16 @@ async def checkout(body: CheckoutIn, request: Request, u: dict = Depends(current
     plan = await db.plans.find_one({"id": body.plan_id, "active": True}, {"_id": 0})
     if not plan or plan["price_cents"] <= 0:
         raise HTTPException(404, "Plano inválido")
+    if is_premium(u):
+        raise HTTPException(409, "Você já tem o Premium ativo.")
     stripe_ready()
     base = os.environ["PUBLIC_BASE_URL"].rstrip("/")
+    trial = not u.get("trial_used")
     try:
         session = await asyncio.to_thread(
             stripe.checkout.Session.create,
             mode="subscription", customer_email=u["email"], locale="pt-BR",
+            **({"subscription_data": {"trial_period_days": TRIAL_DAYS}, "payment_method_collection": "always"} if trial else {}),
             line_items=[{"quantity": 1, "price_data": {"currency": "brl", "unit_amount": plan["price_cents"],
                                                         "recurring": {"interval": plan["interval"]},
                                                         "product_data": {"name": f"ROTA SEGURA {plan['name']}"}}}],
@@ -1591,8 +1653,57 @@ async def checkout(body: CheckoutIn, request: Request, u: dict = Depends(current
         raise HTTPException(502, "Não foi possível iniciar o pagamento")
     await db.payment_transactions.insert_one({"id": new_id(), "session_id": session.id, "user_id": u["id"], "plan_id": plan["id"],
                                               "amount_cents": plan["price_cents"], "currency": "brl", "payment_status": "pendente",
-                                              "created_at": iso(now())})
-    return {"url": session.url, "session_id": session.id}
+                                              "trial": trial, "created_at": iso(now())})
+    return {"url": session.url, "session_id": session.id, "trial": trial}
+
+
+@api.get("/payments/trial")
+async def trial_info(u: dict = Depends(current_user)):
+    return {"eligible": not u.get("trial_used"), "days": TRIAL_DAYS}
+
+
+def _period_end(sub) -> Optional[datetime]:
+    """Fim do período atual da assinatura (compatível com versões novas e antigas da API Stripe)."""
+    ts = sub.get("current_period_end") or (((sub.get("items") or {}).get("data") or [{}])[0].get("current_period_end"))
+    return datetime.fromtimestamp(ts, timezone.utc) if ts else None
+
+
+async def sync_subscription(user: dict) -> None:
+    """Renova (ou encerra) o premium conforme o status real da assinatura no Stripe."""
+    sub = await asyncio.to_thread(stripe.Subscription.retrieve, user["stripe_subscription_id"])
+    end = _period_end(sub)
+    if sub["status"] in ("active", "trialing") and end:
+        await db.users.update_one({"id": user["id"]}, {"$set": {"plan_expires_at": iso(end), "subscription_status": sub["status"]}})
+    elif sub["status"] in ("canceled", "unpaid", "incomplete_expired"):
+        await db.users.update_one({"id": user["id"]}, {"$set": {"subscription_status": sub["status"]}})
+
+
+async def payments_sync_loop():
+    """Confirma pagamentos e renovações sozinho, mesmo se o usuário fechar a página do Stripe."""
+    while True:
+        await asyncio.sleep(PAYMENT_SYNC_SECONDS)
+        if not os.environ.get("STRIPE_API_KEY"):
+            continue
+        try:
+            stripe_ready()
+            since = iso(now() - timedelta(hours=2))
+            pending = await db.payment_transactions.find({"payment_status": "pendente", "created_at": {"$gte": since}},
+                                                         {"_id": 0, "session_id": 1}).to_list(200)
+            for tx in pending:
+                try:
+                    await activate_if_paid(tx["session_id"])
+                except Exception as exc:
+                    logger.info("payment check %s: %s", tx["session_id"], exc)
+            soon = iso(now() + timedelta(days=1))
+            due = await db.users.find({"stripe_subscription_id": {"$nin": [None, ""]},
+                                       "plan_expires_at": {"$lte": soon, "$gte": iso(now() - timedelta(days=3))},
+                                       "subscription_status": {"$nin": ["canceled", "unpaid", "incomplete_expired"]}},
+                                      {"_id": 0, "id": 1, "stripe_subscription_id": 1}).to_list(200)
+            for usr in due:
+                with suppress(Exception):
+                    await sync_subscription(usr)
+        except Exception as exc:
+            logger.warning("payments sync failed: %s", exc)
 
 
 async def activate_if_paid(session_id: str) -> str:
@@ -1603,14 +1714,20 @@ async def activate_if_paid(session_id: str) -> str:
         return "pago"
     stripe_ready()
     s = await asyncio.to_thread(stripe.checkout.Session.retrieve, session_id)
-    if s.payment_status == "paid" and s.status == "complete":
+    if s.status == "complete" and s.payment_status in ("paid", "no_payment_required"):
         plan = await db.plans.find_one({"id": tx["plan_id"]}, {"_id": 0})
-        days = 366 if plan and plan["interval"] == "year" else 31
+        trial = s.payment_status == "no_payment_required"
+        days = TRIAL_DAYS if trial else (366 if plan and plan["interval"] == "year" else 31)
         r = await db.payment_transactions.update_one({"session_id": session_id, "payment_status": {"$ne": "pago"}},
                                                      {"$set": {"payment_status": "pago", "subscription_id": s.subscription, "paid_at": iso(now())}})
         if r.modified_count:
-            await db.users.update_one({"id": tx["user_id"]}, {"$set": {"plan": tx["plan_id"], "plan_expires_at": iso(now() + timedelta(days=days))}})
-            await notify(tx["user_id"], "Assinatura ativada", f"Seu plano {plan['name'] if plan else ''} está ativo. Obrigado!", "success")
+            await db.users.update_one({"id": tx["user_id"]}, {"$set": {
+                "plan": tx["plan_id"], "plan_expires_at": iso(now() + timedelta(days=days)), "stripe_subscription_id": s.subscription,
+                "subscription_status": "trialing" if trial else "active", **({"trial_used": True} if tx.get("trial") else {})}})
+            if trial:
+                await notify(tx["user_id"], "Teste grátis ativado", f"Aproveite {TRIAL_DAYS} dias de Premium. A cobrança só começa depois, e você pode cancelar antes.", "success")
+            else:
+                await notify(tx["user_id"], "Assinatura ativada", f"Seu plano {plan['name'] if plan else ''} está ativo. Obrigado!", "success")
         return "pago"
     if s.status == "expired":
         await db.payment_transactions.update_one({"session_id": session_id}, {"$set": {"payment_status": "expirado"}})
@@ -1648,6 +1765,12 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None, 
         raise HTTPException(400, "Assinatura inválida")
     if event["type"] == "checkout.session.completed":
         await activate_if_paid(event["data"]["object"]["id"])
+    elif event["type"] in ("invoice.paid", "customer.subscription.updated", "customer.subscription.deleted"):
+        obj = event["data"]["object"]
+        sub_id = obj.get("subscription") if event["type"] == "invoice.paid" else obj.get("id")
+        usr = await db.users.find_one({"stripe_subscription_id": sub_id}, {"_id": 0, "id": 1, "stripe_subscription_id": 1}) if sub_id else None
+        if usr:
+            await sync_subscription(usr)
     return {"received": True}
 
 
@@ -1793,6 +1916,7 @@ async def seed():
 async def startup():
     await ensure_indexes()
     await seed()
+    app.state.payments_task = asyncio.create_task(payments_sync_loop())
 
 
 @app.on_event("shutdown")

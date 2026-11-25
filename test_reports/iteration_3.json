@@ -1,0 +1,48 @@
+{
+  "summary": "Iteration 3 tested the Stripe 7-day trial, automatic payment sync, SOS WhatsApp auto-send (Twilio not configured, returns 503), share-screen background notice, and regressions for login, Google and forgot password. Backend: 12 of 13 pytest tests pass. The one failure: for another user's incident, /sos/{id}/whatsapp returns 503 instead of 404 because the Twilio check runs before the ownership check. Frontend: every requested flow works on the web preview at 375x667. Stripe checkout opens with '7 dias grátis'. payments_sync_loop runs every 60s with 0 'payments sync failed' log lines. Background location was not tested because it needs a native build. No deprecated Expo packages were found in the reviewed files.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/sos/{id}/whatsapp", "issue": "Twilio config check (503) runs before the incident ownership lookup. Another user's or a non-existent incident returns 503, not 404. The 404 path cannot be reached until Twilio is configured. Reference: server.py:726-730"},
+      {"endpoint": "payments_sync_loop", "issue": "Every 60s it calls Stripe Session.retrieve for every pending tx from the last 24h. An abandoned checkout is polled about 1440 times, and errors inside suppress(Exception) are swallowed silently, so 'payments sync failed' almost never logs. Consider backoff, skipping sessions whose expires_at has passed, or a debug log inside suppress. Reference: server.py:1688-1699"},
+      {"endpoint": "POST /api/payments/checkout", "issue": "Checkout is not blocked for users who are already premium, and trial_used is only set after activation. A user can open several trial sessions, complete two, and get two trial subscriptions, or start a second subscription while premium. Reference: server.py:1629-1655"},
+      {"endpoint": "Stripe checkout", "issue": "Stripe hosted page showed 'Depois, US$ 2,65 por mês' for a BRL plan (Adaptive Pricing converts by IP). For a pt-BR product, consider turning off adaptive pricing in the Stripe dashboard so the price stays in R$."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "SosSheet confirm", "issues": ["The copy says 'seus contatos de confiança recebem um alerta automático pelo WhatsApp', but Twilio is not configured, so no automatic alert is sent. This is misleading in a safety flow. Make the text conditional, or soften it until Twilio is live."]},
+      {"screen": "SosSheet actions", "issues": ["sos-whatsapp-auto-status uses the green success WhatsApp icon even when it shows an error or the 'não configurado' message. Use a warning or muted color for failure states."]},
+      {"screen": "Plans", "issues": ["The button label uses trial.eligible without checking user.is_premium. A premium user who never used the trial would see 'Testar 7 dias grátis' on the other paid plan."]},
+      {"screen": "Share", "issues": ["The success toast 'Link criado...' overlaps the ScreenHeader title at the top. Cosmetic."]}
+    ],
+    "react_native_issues": [
+      {"component": "backgroundShare-logout", "issue": "stopBackgroundShare() is not called on logout. In native builds the background location task and foreground-service notification keep running after logout; the task just returns early once the token is gone. Reference: /app/frontend/src/backgroundShare.ts:60 (only called from share.tsx)"}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_trial_sos_whatsapp_iter3.py", "/app/test_reports/pytest/pytest_iter3.xml"],
+  "action_items": [
+    "server.py sos_whatsapp: move the incident ownership lookup (404) before the Twilio-configured 503 check.",
+    "SosSheet confirm text: don't promise an automatic WhatsApp alert while Twilio is not configured. Use a warning color for the failed auto-status.",
+    "Call stopBackgroundShare() in the auth logout flow (and when the account changes).",
+    "Checkout: block or warn when the user is already premium, and guard against several open trial sessions per account.",
+    "payments_sync_loop: skip expired sessions and log the exceptions it currently suppresses at debug/warning level.",
+    "plans.tsx: show the trial label only when trial.eligible && !user.is_premium."
+  ],
+  "critical_code_review_comments": [
+    "activate_if_paid is correct: complete+paid and complete+no_payment_required both activate. The trial grants 7 days with status 'trialing' and sets trial_used only when tx.trial. The update is guarded by payment_status != 'pago' to stay idempotent.",
+    "sync_subscription renews plan_expires_at from current_period_end for active/trialing. past_due is not handled explicitly, but the plan expires naturally.",
+    "The users 'due' query (plan_expires_at <= now+1d) also matches long-expired users whose status is past_due or incomplete, so they are re-synced with Stripe every 60s forever.",
+    "server.py is 1919 lines and should be split into routers (payments, sos, share, auth).",
+    "An old traceback in backend.err.log (naive vs aware datetime in password reset) is already fixed in the current code (server.py:278); forgot-password returns 200."
+  ],
+  "updated_files": ["/app/backend/tests/test_trial_sos_whatsapp_iter3.py"],
+  "success_rate": {"backend": "92% (12/13)", "frontend": "100% of requested flows"},
+  "seed_data_creation": "Created TEST_ users test_*@example.com and test_ui_d064fc@example.com / Test@1234 (no account-delete endpoint exists, so they remain), plus pending Stripe test checkout sessions (never paid). Test contacts were deleted and the SOS incidents were marked cancelado/resolvido.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "On web, tap Expo buttons with el.click() via evaluate; the sheet animation makes force-click fail with 'outside viewport'. Grant geolocation in the context for SOS and share. Twilio keys are absent, so /sos/{id}/whatsapp returns 503. Do not complete Stripe payments. Background location needs a native build.",
+  "rca_of_issue": "The 503-vs-404 mismatch comes from check ordering in sos_whatsapp: the env check at line 726 comes before the find_one with user_id at line 728."
+}

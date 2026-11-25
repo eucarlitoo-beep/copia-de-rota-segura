@@ -24,8 +24,11 @@ export default function Plans() {
   const [busy, setBusy] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
 
+  const [trial, setTrial] = useState<{ eligible: boolean; days: number } | null>(null);
+
   useEffect(() => {
     api<Plan[]>("/plans").then(setPlans).catch((e) => { setPlans([]); toast(errMsg(e), "error"); });
+    api<{ eligible: boolean; days: number }>("/payments/trial").then(setTrial).catch(() => {});
   }, [toast]);
 
   const check = useCallback(async () => {
@@ -38,6 +41,7 @@ export default function Plans() {
         if (r.status === "pago") {
           await storage.removeItem(PENDING_KEY);
           await refresh();
+          setTrial((t) => (t ? { ...t, eligible: false } : t));
           toast("Assinatura ativada! Obrigado.", "success");
           break;
         }
@@ -84,6 +88,14 @@ export default function Plans() {
           </View>
         </View>
         <Txt testID="plans-free-note" variant="small" style={{ textAlign: "center" }}>O plano gratuito funciona sem informar cartão. As assinaturas Premium são opcionais.</Txt>
+        {trial?.eligible && !user?.is_premium ? (
+          <View testID="plans-trial-banner" style={s.trial}>
+            <Icon name="gift" size={24} color={colors.brandPrimary} />
+            <Txt style={{ flex: 1 }}>
+              <Txt style={{ fontFamily: F.bold }}>{trial.days} dias grátis no Premium.</Txt> Cadastre o cartão e só pague depois do período de teste. Cancele antes e não paga nada.
+            </Txt>
+          </View>
+        ) : null}
         {checking ? <View style={s.checking}><ActivityIndicator color={colors.brand} /><Txt>Confirmando pagamento...</Txt></View> : null}
         {!plans ? <ActivityIndicator color={colors.brand} size="large" /> : plans.map((p) => {
           const isCurrent = (user?.plan ?? "gratuito") === p.id;
@@ -100,7 +112,7 @@ export default function Plans() {
                 <View key={f} style={s.feat}><Icon name="checkmark-circle" size={20} color={colors.success} /><Txt style={{ flex: 1 }}>{f}</Txt></View>
               ))}
               {p.price_cents > 0 ? (
-                <Btn testID={`plan-subscribe-${p.id}`} label={isCurrent ? "Plano atual" : "Assinar com cartão"} icon="card" onPress={() => subscribe(p)} loading={busy === p.id} disabled={isCurrent || !!busy} style={{ marginTop: S.md }} />
+                <Btn testID={`plan-subscribe-${p.id}`} label={isCurrent ? "Plano atual" : trial?.eligible && !user?.is_premium ? `Testar ${trial.days} dias grátis` : "Assinar com cartão"} icon="card" onPress={() => subscribe(p)} loading={busy === p.id} disabled={isCurrent || !!busy} style={{ marginTop: S.md }} />
               ) : null}
             </View>
           );
@@ -118,6 +130,7 @@ const useStyles = makeStyles((c) => ({
   current: { flexDirection: "row", gap: S.md, alignItems: "center", backgroundColor: c.brand, borderRadius: R.md, padding: S.lg },
   curTitle: { fontFamily: F.bold, fontSize: 16, color: c.onBrand },
   curSub: { fontFamily: F.medium, fontSize: 13, color: c.brandTertiary },
+  trial: { flexDirection: "row", gap: S.md, alignItems: "center", backgroundColor: c.surface, borderRadius: R.md, padding: S.lg, borderWidth: 2, borderColor: c.brandPrimary },
   checking: { flexDirection: "row", gap: S.sm, alignItems: "center", justifyContent: "center" },
   card: { backgroundColor: c.surface, borderRadius: R.lg, padding: S.xl, gap: S.sm, borderWidth: 1, borderColor: c.border },
   cardFeatured: { borderColor: c.brandPrimary, borderWidth: 2 },

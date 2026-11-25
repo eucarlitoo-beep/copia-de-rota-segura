@@ -13,7 +13,10 @@ Expo SDK 58 (expo-router) + FastAPI + MongoDB. JWT auth (app token). Integration
 - 2026-06: "Enviar pelo WhatsApp" button on live location share.
 - 2026-06: Fixes: naive datetime crash in reset request; active share visible without location permission; Google web error shown on login.
 
+- 2026-06 (iter 3): Auto payment confirmation (60s backend sync + webhook renewals), 7-day trial with card (once/account), background location share (expo-task-manager, native build only), SOS auto WhatsApp via Twilio (needs TWILIO_ACCOUNT_SID/AUTH_TOKEN/WHATSAPP_FROM, optional CONTENT_SID template) + manual WhatsApp buttons.
+
 ## Backlog
+- P0: Add Twilio keys to enable automatic SOS WhatsApp.
 - P0: Add STRIPE_API_KEY (and STRIPE_WEBHOOK_SECRET) to enable real premium payments.
 - P1: Background location updates (native build), store google `sub` instead of email.
 - P2: Split server.py, separate loading spinners on login buttons.

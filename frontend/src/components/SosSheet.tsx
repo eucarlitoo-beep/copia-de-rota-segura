@@ -28,8 +28,10 @@ export function SosSheet({ visible, onClose }: { visible: boolean; onClose: () =
   const [locErr, setLocErr] = useState<LocFailure | null>(null);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [done, setDone] = useState<Record<string, string>>({});
+  const [waAutoOk, setWaAutoOk] = useState<boolean | null>(null);
   useEffect(() => {
     if (!visible) return;
+    setWaAutoOk(null);
     setStep("confirm");
     setIncidentId(null);
     setCoords(null);
@@ -51,6 +53,11 @@ export function SosSheet({ visible, onClose }: { visible: boolean; onClose: () =
         body: loc.ok ? { lat: loc.coords.lat, lng: loc.coords.lng, accuracy: loc.coords.accuracy } : {},
       });
       setIncidentId(inc.id);
+      // Alerta automático pelo WhatsApp (servidor), sem esperar o usuário tocar.
+      api<{ sent: number; total: number }>(`/sos/${inc.id}/whatsapp`, { method: "POST" })
+        .then((r) => { setWaAutoOk(true); setDone((d) => ({ ...d, waAuto: `Alerta enviado pelo WhatsApp a ${r.sent} de ${r.total} contato(s)` })); })
+        .catch((e) => { setWaAutoOk(false); setDone((d) => ({ ...d, waAuto: `${errMsg(e)}` })); });
+      setDone((d) => ({ ...d, waAuto: "Enviando alerta pelo WhatsApp..." }));
     } catch {
       // sem internet: as ações locais (ligar/SMS) continuam funcionando
     }
@@ -124,8 +131,8 @@ export function SosSheet({ visible, onClose }: { visible: boolean; onClose: () =
           </Animated.View>
           <Txt variant="title" style={{ textAlign: "center" }}>Acionar SOS?</Txt>
           <Txt style={{ textAlign: "center", marginVertical: S.md }}>
-            Nada é enviado automaticamente. Na próxima tela você escolhe ligar para a emergência ou avisar seus contatos.
-            Sua localização atual será incluída na mensagem.
+            Ao confirmar, tentamos avisar automaticamente seus contatos de confiança pelo WhatsApp, com sua localização.
+            Na próxima tela você vê se o alerta saiu e também pode ligar para a emergência ou avisar por outros meios.
           </Txt>
           <Btn testID="sos-confirm-button" label="Sim, preciso de ajuda" icon="alert-circle" onPress={confirm} loading={busy} style={{ minHeight: 64 }} />
           <Btn testID="sos-cancel-button" label="Cancelar" variant="ghost" onPress={onClose} style={{ marginTop: S.sm }} />
@@ -158,6 +165,15 @@ export function SosSheet({ visible, onClose }: { visible: boolean; onClose: () =
             <Txt testID="sos-no-contacts" variant="small">Nenhum contato cadastrado. Adicione em Perfil {">"} Contatos de emergência.</Txt>
           ) : (
             <>
+              {done.waAuto ? (
+                <View testID="sos-whatsapp-auto-status" style={s.action}>
+                  <Icon name={waAutoOk === false ? "alert-circle" : "logo-whatsapp"} size={24} color={waAutoOk === false ? colors.error : colors.success} />
+                  <View style={{ flex: 1 }}>
+                    <Txt variant="label" style={{ marginBottom: 0 }}>Alerta automático</Txt>
+                    <Txt variant="small">{done.waAuto}</Txt>
+                  </View>
+                </View>
+              ) : null}
               {contacts.map((c) => (
                 <Pressable key={c.id} testID={`sos-whatsapp-${c.id}`} onPress={() => whatsapp(c)} style={s.action}>
                   <Icon name="logo-whatsapp" size={24} color={colors.success} />
